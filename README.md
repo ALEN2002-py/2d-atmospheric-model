@@ -69,7 +69,7 @@ $$\frac{\partial \pi'}{\partial t} = -u\frac{\partial \pi'}{\partial x} - w\frac
 
 $$\frac{\partial \theta'}{\partial t} = -u\frac{\partial \theta'}{\partial x} - w\frac{\partial \theta'}{\partial z} - w\frac{d\bar{\theta}}{dz}$$
 
-The buoyancy term $g\,\theta'/\bar{\theta}$ in (2) drives convection.
+The buoyancy term $g\.\theta'/\bar{\theta}$ in (2) drives convection.
 The acoustic source $(\partial u/\partial x + \partial w/\partial z)$ in (3) generates
 fast sound waves ($c_s \approx 347\,\mathrm{m\,s^{-1}}$) that make the system stiff.
 
