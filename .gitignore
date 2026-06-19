@@ -1,0 +1,30 @@
+# Generated output — not tracked
+output/
+*.nc
+*.npy
+*.npz
+*.json
+
+# Private project notes
+CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build / packaging
+*.egg-info/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+.idea/
