@@ -97,7 +97,7 @@ def run_simulation(scheme, grid, bubble_amp, dt, t_end,
     """
     n_steps   = int(round(t_end / dt))
     state     = make_initial_state(grid, bubble_amp)
-    state_old = None  # CTCS bootstraps with FTCS on step 0 when None
+    state_old = grid.allocate_state()
 
     total_wall = 0.0
     series     = [] if collect_series else None
@@ -106,8 +106,6 @@ def run_simulation(scheme, grid, bubble_amp, dt, t_end,
     for n in range(n_steps):
         t0 = time.perf_counter()
 
-        # Save φ^(n-1) BEFORE step() overwrites state_old with φ^n
-        state_prev = state_old
         try:
             state_new, state_old, _ = step(state, grid, dt,
                                            scheme=scheme,
@@ -117,12 +115,8 @@ def run_simulation(scheme, grid, bubble_amp, dt, t_end,
             return None, None, series
 
         if scheme == 'CTCS' and n > 0:
-            # Proper Robert-Asselin filter: φ^n_f = φ^n + α*(φ^(n-1) - 2φ^n + φ^(n+1))
-            state_filtered = robert_asselin_filter(state_prev, state,
-                                                   state_new, alpha=0.1)
-            # For the next leapfrog step: current = φ^(n+1), old = φ^n_filtered
-            state_old = state_filtered
-            state = state_new
+            state = robert_asselin_filter(state_old, state,
+                                          state_new, alpha=0.1)
         else:
             state = state_new
 
@@ -134,9 +128,7 @@ def run_simulation(scheme, grid, bubble_amp, dt, t_end,
             return None, None, series
 
         if collect_series and (n + 1) % max(1, n_steps // 50) == 0:
-            series.append((t,
-                           float(np.max(np.abs(state['theta']))),
-                           float(np.max(np.abs(state['w'])))))
+            series.append((t, float(np.max(np.abs(state['theta'])))))
 
     tps = total_wall / n_steps if n_steps > 0 else 0.0
     return state, tps, series
@@ -192,12 +184,10 @@ def run_comparison(schemes=None, bubble_amp=2.0, t_end=2.0,
     # ------------------------------------------------------------------
     print("\n" + "="*55)
     print("  STEP 1 — Computing reference solution")
-    print(f"  scheme=RK4  dt={ref_dt}s  t_end={t_end}s")
-    print("  (RK4 reference is scheme-agnostic; CTCS would give")
-    print("   artificially small errors for itself)")
+    print(f"  scheme=CTCS  dt={ref_dt}s  t_end={t_end}s")
     print("="*55)
 
-    ref_state, _, _ = run_simulation('RK4', grid, bubble_amp,
+    ref_state, _, _ = run_simulation('CTCS', grid, bubble_amp,
                                      ref_dt, t_end)
     if ref_state is None:
         print("  Reference solution failed. Exiting.")
@@ -219,9 +209,9 @@ def run_comparison(schemes=None, bubble_amp=2.0, t_end=2.0,
 
     for scheme in schemes:
         print(f"\n  {scheme}")
-        hdr = "L2(theta')"
-        print(f"  {'dt':>8}  {'steps':>6}  {hdr:>10}  "
-              f"{'MAE':>10}  {'ms/step':>8}")
+        header = "  {:>8}  {:>6}  {:>10}  {:>10}  {:>8}".format(
+            "dt", "steps", "L2(theta')", "MAE(theta')", "ms/step")
+        print(header)
         print("  " + "-"*50)
 
         for dt in test_dts:
@@ -253,9 +243,7 @@ def run_comparison(schemes=None, bubble_amp=2.0, t_end=2.0,
     print("  STEP 3 — Collecting time series")
     print("="*55)
 
-    # Use dt=0.02 so schemes differ visibly (CTCS L2≈3e-5 vs RK4 L2≈3e-11).
-    # At dt=0.01 all schemes agree to <1e-7 and curves completely overlap.
-    series_dt   = test_dts[2] if len(test_dts) > 2 else test_dts[-1]
+    series_dt   = test_dts[1] if len(test_dts) > 1 else test_dts[0]
     series_data = {}
 
     for scheme in schemes:
@@ -319,8 +307,8 @@ def _plot_convergence(results, schemes, test_dts, t_end):
     """
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
     fig.suptitle(
-        f"Convergence Plot — L2 error vs Δt  (t_end = {t_end} s, ref: RK4)\n"
-        "Slope of line = order of accuracy  |  flat lines = spatial error floor",
+        f"Convergence Plot — L2 error vs Δt  (t_end = {t_end} s)\n"
+        "Slope of line = order of accuracy",
         fontsize=12, fontweight='bold'
     )
 
@@ -337,25 +325,19 @@ def _plot_convergence(results, schemes, test_dts, t_end):
                           color=SCHEME_COLORS.get(scheme, 'black'),
                           label=scheme, lw=2, markersize=7)
 
-        # Reference order lines — anchor at median error at largest dt
+        # Reference order lines
         if dts:
             da   = np.array(sorted(test_dts))
             base = da[-1]
-            # Find a representative error magnitude at largest dt
-            ref_vals = [results[s][base]['errors']['theta'][metric]
-                        for s in schemes
-                        if base in results[s]
-                        and np.isfinite(results[s][base]['errors']['theta'][metric])]
-            anchor = float(np.median(ref_vals)) if ref_vals else 1e-3
             # 1st order
-            ax.loglog(da, (da/base)**1 * anchor, 'k--',
-                      alpha=0.45, lw=1.4, label='1st order')
+            ax.loglog(da, (da/base)**1 * 0.1, 'k--',
+                      alpha=0.35, lw=1.2, label='1st order')
             # 2nd order
-            ax.loglog(da, (da/base)**2 * anchor, 'k:',
-                      alpha=0.45, lw=1.4, label='2nd order')
+            ax.loglog(da, (da/base)**2 * 0.1, 'k:',
+                      alpha=0.35, lw=1.2, label='2nd order')
             # 4th order
-            ax.loglog(da, (da/base)**4 * anchor, 'k-.',
-                      alpha=0.45, lw=1.4, label='4th order')
+            ax.loglog(da, (da/base)**4 * 0.1, 'k-.',
+                      alpha=0.35, lw=1.2, label='4th order')
 
         ax.set_xlabel("Δt  (s)", fontsize=10)
         ax.set_ylabel(f"{mlabel} of θ'", fontsize=10)
@@ -367,7 +349,7 @@ def _plot_convergence(results, schemes, test_dts, t_end):
     fname = os.path.join(PLOT_DIR, "convergence_plot.png")
     plt.savefig(fname, dpi=130, bbox_inches='tight')
     print(f"  Saved: {fname}")
-    plt.close(fig)
+    plt.show()
 
 
 # ===========================================================================
@@ -437,7 +419,7 @@ def _plot_error_heatmap(results, schemes, test_dts):
     fname = os.path.join(PLOT_DIR, "error_heatmap.png")
     plt.savefig(fname, dpi=130, bbox_inches='tight')
     print(f"  Saved: {fname}")
-    plt.close(fig)
+    plt.show()
 
 
 # ===========================================================================
@@ -498,7 +480,7 @@ def _plot_efficiency(results, schemes, test_dts, t_end):
     fname = os.path.join(PLOT_DIR, "efficiency_plot.png")
     plt.savefig(fname, dpi=130, bbox_inches='tight')
     print(f"  Saved: {fname}")
-    plt.close(fig)
+    plt.show()
 
 
 # ===========================================================================
@@ -507,55 +489,38 @@ def _plot_efficiency(results, schemes, test_dts, t_end):
 
 def _plot_time_series(series_data, schemes, dt):
     """
-    Two-panel time series:
-      Left  — max|θ'|: warm bubble amplitude (RA filter damping visible)
-      Right — max|w|:  convective updraft strength (grows from 0)
-
-    Using a larger dt (0.02) ensures CTCS near its stability limit shows
-    visibly different evolution from RK4/SI, making scheme differences
-    discernible. At dt=0.01 all curves are indistinguishable (<1e-7 error).
+    Line plot of max|theta'| over simulation time for each scheme.
+    Shows whether the bubble grows, stays stable, or decays.
     """
     if not series_data:
         print("  No time series data collected.")
         return
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, ax = plt.subplots(figsize=(10, 5))
     fig.suptitle(
-        f"Time Series — Δt = {dt} s  |  "
-        "Curves that stop early = scheme blow-up at this dt\n"
-        "max|θ'| shows amplitude damping; max|w| shows convective growth",
+        f"Time Series — max|θ'| over time  |  Δt = {dt} s\n"
+        "Stable schemes maintain a smooth curve. "
+        "Blow-up = sudden jump to infinity.",
         fontsize=11, fontweight='bold'
     )
-
-    ax_theta, ax_w = axes
 
     for scheme, series in series_data.items():
         t_vals    = [s[0] for s in series]
         theta_max = [s[1] for s in series]
-        # Series entries may be 2-tuple (old) or 3-tuple (new); handle both
-        w_max     = [s[2] for s in series] if len(series[0]) > 2 else None
-        color = SCHEME_COLORS.get(scheme, 'black')
-        ax_theta.plot(t_vals, theta_max, color=color, label=scheme, lw=2)
-        if w_max is not None:
-            ax_w.plot(t_vals, w_max, color=color, label=scheme, lw=2)
+        ax.plot(t_vals, theta_max,
+                color=SCHEME_COLORS.get(scheme, 'black'),
+                label=scheme, lw=2)
 
-    ax_theta.set_xlabel("Time  (s)", fontsize=11)
-    ax_theta.set_ylabel("max |θ'|  (K)", fontsize=11)
-    ax_theta.set_title("Bubble amplitude (θ' perturbation)", fontsize=11)
-    ax_theta.legend(fontsize=10)
-    ax_theta.grid(True, alpha=0.3)
-
-    ax_w.set_xlabel("Time  (s)", fontsize=11)
-    ax_w.set_ylabel("max |w|  (m s⁻¹)", fontsize=11)
-    ax_w.set_title("Convective updraft (w grows from 0 by buoyancy)", fontsize=11)
-    ax_w.legend(fontsize=10)
-    ax_w.grid(True, alpha=0.3)
+    ax.set_xlabel("Time  (s)", fontsize=11)
+    ax.set_ylabel("max |θ'|  (K)", fontsize=11)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     fname = os.path.join(PLOT_DIR, "time_series_theta.png")
     plt.savefig(fname, dpi=130, bbox_inches='tight')
     print(f"  Saved: {fname}")
-    plt.close(fig)
+    plt.show()
 
 
 # ===========================================================================

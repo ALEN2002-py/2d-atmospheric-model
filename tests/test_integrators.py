@@ -12,6 +12,6 @@ def test_zero_amplitude_all_schemes():
     for scheme in ALL_SCHEMES:
         state = g.allocate_state()
         s_old = g.allocate_state()
-        s_new, _ = step(state, g, 0.02, scheme=scheme, state_old=s_old)
+        s_new, _, _epi = step(state, g, 0.02, scheme=scheme, state_old=s_old)
         for k in s_new:
-            assert np.allclose(s_new[k], 0.0), f"{scheme} failed zero-amp on {k}"
+            assert np.allclose(s_new[k], 0.0), scheme + " failed zero-amp on " + k

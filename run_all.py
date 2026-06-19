@@ -88,7 +88,7 @@ def run_zero_amplitude_test(dt=0.02, n_steps=100):
         t = 0.0
 
         for n in range(n_steps):
-            state_new, state_old = step(
+            state_new, state_old, _ = step(
                 state,
                 grid,
                 dt,
@@ -213,7 +213,7 @@ def run_warm_bubble(
     t = 0.0
 
     for n in range(n_steps):
-        state_new, state_old = step(
+        state_new, state_old, _ = step(
             state,
             grid,
             dt,

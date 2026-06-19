@@ -61,13 +61,13 @@ $$\theta = \bar{\theta}(z) + \theta'(x,z,t), \qquad \pi = \bar{\pi}(z) + \pi'(x,
 
 The four prognostic equations are:
 
-$$\frac{\partial u}{\partial t} = -u\frac{\partial u}{\partial x} - w\frac{\partial u}{\partial z} - c_p\!\left(\bar{\theta} + \theta'\right)\frac{\partial \pi'}{\partial x} \tag{1}$$
+$$\frac{\partial u}{\partial t} = -u\frac{\partial u}{\partial x} - w\frac{\partial u}{\partial z} - c_p \left(\bar{\theta} + \theta'\right)\frac{\partial \pi'}{\partial x}$$
 
-$$\frac{\partial w}{\partial t} = -u\frac{\partial w}{\partial x} - w\frac{\partial w}{\partial z} - c_p\!\left(\bar{\theta} + \theta'\right)\frac{\partial \pi'}{\partial z} + g\frac{\theta'}{\bar{\theta}} \tag{2}$$
+$$\frac{\partial w}{\partial t} = -u\frac{\partial w}{\partial x} - w\frac{\partial w}{\partial z} - c_p \left(\bar{\theta} + \theta'\right)\frac{\partial \pi'}{\partial z} + g\frac{\theta'}{\bar{\theta}}$$
 
-$$\frac{\partial \pi'}{\partial t} = -u\frac{\partial \pi'}{\partial x} - w\frac{\partial \pi'}{\partial z} - \frac{R}{c_v}\!\left(\bar{\pi} + \pi'\right)\!\left(\frac{\partial u}{\partial x} + \frac{\partial w}{\partial z}\right) + \frac{gw}{c_p\bar{\theta}} \tag{3}$$
+$$\frac{\partial \pi'}{\partial t} = -u\frac{\partial \pi'}{\partial x} - w\frac{\partial \pi'}{\partial z} - \frac{R}{c_v} \left(\bar{\pi} + \pi'\right) \left(\frac{\partial u}{\partial x} + \frac{\partial w}{\partial z}\right) + \frac{gw}{c_p \bar{\theta}}$$
 
-$$\frac{\partial \theta'}{\partial t} = -u\frac{\partial \theta'}{\partial x} - w\frac{\partial \theta'}{\partial z} - w\frac{d\bar{\theta}}{dz} \tag{4}$$
+$$\frac{\partial \theta'}{\partial t} = -u\frac{\partial \theta'}{\partial x} - w\frac{\partial \theta'}{\partial z} - w\frac{d\bar{\theta}}{dz}$$
 
 The buoyancy term $g\,\theta'/\bar{\theta}$ in (2) drives convection.
 The acoustic source $(\partial u/\partial x + \partial w/\partial z)$ in (3) generates
@@ -92,7 +92,7 @@ $$\frac{dq}{dt} = \mathcal{L}q + \mathcal{N}(q)$$
 
 An **isothermal** base state ($T_0 = 300\,\mathrm{K}$) satisfies hydrostatic balance:
 
-$$\bar{p}(z) = p_0\exp\!\left(\frac{-gz}{RT_0}\right), \quad
+$$\bar{p}(z) = p_0 \exp\left(\frac{-gz}{RT_0}\right), \quad
 \bar{\pi}(z) = \left(\frac{\bar{p}(z)}{p_0}\right)^{R/c_p}, \quad
 \bar{\theta}(z) = \frac{T_0}{\bar{\pi}(z)}$$
 
@@ -366,7 +366,6 @@ python compare_schemes.py --schemes RK4 SI EPI2 EPI3
 | G&R (2008) Case 2 benchmark | ✅ |
 | G&R efficiency frontier (error vs wall time) | ✅ |
 | P&C (2022) Experiment 1 | ✅ |
-| MMS (Method of Manufactured Solutions) | ⚠️ pending |
 | Straka cold density current | ⚠️ pending |
 | Dissertation write-up | 🔜 Aug 2026 |
 

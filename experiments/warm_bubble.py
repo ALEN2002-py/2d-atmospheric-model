@@ -65,9 +65,9 @@ def run_warm_bubble(scheme='CTCS', bubble_amp=2.0, dt=0.01,
     for n in range(n_steps):
         # Save phi^(n-1) BEFORE step() overwrites state_old with phi^n
         state_prev = state_old
-        state_new, state_old = step(state, grid, dt,
-                                    scheme=scheme,
-                                    state_old=state_old)
+        state_new, state_old, _ = step(state, grid, dt,
+                                       scheme=scheme,
+                                       state_old=state_old)
         if scheme == 'CTCS' and n > 0:
             # Proper Robert-Asselin filter:
             #   phi^n_f = phi^n + alpha*(phi^(n-1) - 2*phi^n + phi^(n+1))

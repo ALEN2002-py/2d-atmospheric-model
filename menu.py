@@ -132,9 +132,9 @@ def _run(scheme_key, bubble_amp, dt, n_steps):
     for n in range(n_steps):
         state_prev = state_old   # save phi^(n-1) BEFORE step() overwrites state_old
         try:
-            state_new, state_old = step(state, grid, dt,
-                                        scheme=scheme_key,
-                                        state_old=state_old)
+            state_new, state_old, _ = step(state, grid, dt,
+                                           scheme=scheme_key,
+                                           state_old=state_old)
         except Exception as e:
             print(f"  *** ERROR at step {n+1}: {e}")
             blown_up = True

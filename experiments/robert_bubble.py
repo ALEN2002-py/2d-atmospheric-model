@@ -180,9 +180,9 @@ def run_scheme(cfg, scheme, dt, n_snapshots=7):
     for n in range(n_steps):
         state_prev = state_old   # save phi^(n-1) BEFORE step overwrites it
         try:
-            state_new, state_old = step(state, grid, dt,
-                                        scheme=scheme,
-                                        state_old=state_old)
+            state_new, state_old, _ = step(state, grid, dt,
+                                           scheme=scheme,
+                                           state_old=state_old)
         except Exception as e:
             print(f"  [{scheme}] Exception at step {n+1}: {e}")
             blown = True

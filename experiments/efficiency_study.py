@@ -63,9 +63,9 @@ def compute_reference(bubble_amp=2.0, ref_dt=0.002, t_end=2.0,
     for n in range(n_steps):
         # Save φ^(n-1) BEFORE step() overwrites state_old with φ^n
         state_prev = state_old
-        state_new, state_old = step(state, grid, ref_dt,
-                                    scheme=scheme,
-                                    state_old=state_old)
+        state_new, state_old, _ = step(state, grid, ref_dt,
+                                       scheme=scheme,
+                                       state_old=state_old)
         if scheme == 'CTCS' and n > 0:
             # Proper Robert-Asselin filter: φ^n_f = φ^n + α*(φ^(n-1) - 2φ^n + φ^(n+1))
             state_filtered = robert_asselin_filter(state_prev, state,

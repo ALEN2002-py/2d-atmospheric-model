@@ -83,9 +83,9 @@ def run(scheme='CTCS', bubble_amp=2.0, dt=0.02, n_steps=500,
     blown_up = False
 
     for n in range(n_steps):
-        state_new, state_old = step(state, grid, dt,
-                                    scheme=scheme,
-                                    state_old=state_old)
+        state_new, state_old, _ = step(state, grid, dt,
+                                       scheme=scheme,
+                                       state_old=state_old)
 
         if scheme == 'CTCS' and n > 0:
             state = robert_asselin_filter(state_old, state,
