@@ -109,9 +109,6 @@ $$\bar{p}(z) = p_0 \exp\left(\frac{-gz}{RT_0}\right), \quad
 | Top/bottom BCs | $w = 0$, $\;\partial\theta'/\partial t = 0$ (rigid lid) |
 | Sponge layer | Rayleigh damping ($\sin^2$ ramp) in top 20% of domain |
 
-An Arakawa C-grid was considered but rejected; the unstaggered arrangement
-gives cleaner boundary-condition control and is consistent with
-Giraldo & Restelli (2008).
 
 ---
 
