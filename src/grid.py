@@ -1,74 +1,68 @@
 """
 grid.py
 =======
-Unstaggered grid for the 2D non-hydrostatic atmospheric model.
+Unstaggered 2D grid for the non-hydrostatic compressible atmospheric model.
 
-IMPORTANT CHANGE FROM PREVIOUS VERSION
----------------------------------------
-We switched from a staggered Arakawa C-grid to an UNSTAGGERED grid.
+All four prognostic variables (u, w, theta', pi') share the same set of
+cell-centred grid points. A staggered Arakawa C-grid was considered but
+an unstaggered layout was adopted because enforcing the solid-wall boundary
+conditions cleanly is more important at this stage than the accuracy gains
+from staggering.
 
-Why? Dr Clancy's note says:
-  "we returned to unstaggered, finding that control of the boundary
-   conditions was the more important factor"
+Variables follow the theta-pi perturbation form of Giraldo & Restelli (2008):
+  u      — horizontal velocity      [m/s]
+  w      — vertical velocity        [m/s]
+  theta' — potential temperature perturbation  [K]
+  pi'    — Exner pressure perturbation         [-]
 
-On an unstaggered grid ALL variables live at the SAME points:
-  u, w, theta', pi'  all at every (x_i, z_k) point.
-
-This makes boundary conditions much simpler to apply and is the
-starting point before we add complexity.
-
-Variables used (theta-pi form, from Giraldo & Restelli 2008):
-  u      : horizontal velocity                          [m/s]
-  w      : vertical velocity                            [m/s]
-  theta' : potential temperature perturbation           [K]
-  pi'    : Exner pressure perturbation                  [-]
-
-Grid layout (unstaggered):
---------------------------
-  All variables on same (nz x nx) grid.
-  Points at cell centres: x_i = (i+0.5)*dx, z_k = (k+0.5)*dz
-
-  z ^
-  nz|  *  *  *  *  *  *    <- all variables here
-    |  *  *  *  *  *  *
-    |  *  *  *  *  *  *
-   0|  *  *  *  *  *  *
-    +-------------------> x
-     0                nx
-
-  * = u, w, theta', pi' all live at same point
+Grid layout  (nz rows x nx columns, cell centres):
+  x_i = (i + 0.5) * dx,   i = 0 .. nx-1
+  z_k = (k + 0.5) * dz,   k = 0 .. nz-1
 
 Boundary conditions:
-  x: periodic   (left wraps to right)
-  z: w=0 at top and bottom (solid walls)
-     one-sided differences at top/bottom for z-derivatives
+  x — periodic
+  z — w = 0 at top and bottom (solid walls);
+      one-sided finite differences at k=0 and k=nz-1
 """
 
 import numpy as np
 
 
 # ---------------------------------------------------------------------------
-# Default parameters — warm bubble (Robert 1993)
+# Default parameters
 # ---------------------------------------------------------------------------
 
 DEFAULTS = {
     # Domain
-    "Lx": 1000.0,   # m — 1 km wide  (Dr Clancy's note uses ~1km domain)
-    "Lz": 1000.0,   # m — 1 km tall
+    "Lx": 1000.0,   # m
+    "Lz": 1000.0,   # m
 
     # Resolution
-    "dx": 10.0,     # m — 10 m spacing
-    "dz": 10.0,     # m — 10 m spacing
+    "dx": 10.0,     # m
+    "dz": 10.0,     # m
 
     # Physical constants
     "g":   9.81,    # m/s^2
     "cp":  1004.0,  # J/kg/K
     "cv":  717.0,   # J/kg/K
     "Rd":  287.0,   # J/kg/K
-    "p0":  1.0e5,   # Pa  — reference pressure for Exner
+    "p0":  1.0e5,   # Pa
 
-    # Base state (isothermal)
-    "T0":    300.0,   # K  — constant background temperature
+    # Base state
+    "T0":             300.0,         # K  reference temperature / constant theta_bar
+    "stratification": "isentropic",  # "isentropic" neutral dtheta/dz=0  (G&R 2008)
+                                     # "isothermal"  stable, constant T0
+
+    # Explicit diffusion coefficient.  0.0 = no diffusion.
+    # Units: m^diffusion_order / s
+    # G&R (2008) use κ ≈ 75 m²/s (order=2) for density current only.
+    # For bubble tests use κ ≤ 5 m²/s or order=4/8 hyperdiffusion.
+    "diffusion_coeff": 0.0,
+
+    # Hyperdiffusion order: 2 = standard Laplacian (κ∇²),
+    # 4 = biharmonic (-κ∇⁴), 8 = octaharmonic (-κ∇⁸).
+    # Higher order damps only the shortest waves, preserving the bubble.
+    "diffusion_order": 2,
 
     # Sponge layer
     "sponge_fraction": 0.20,
@@ -86,13 +80,13 @@ class Grid:
 
     Usage
     -----
-        g = Grid()                            # defaults
-        g = Grid({"Lx": 5000, "dx": 20})     # warm bubble
+        g = Grid()                                        # isentropic default
+        g = Grid({"Lx": 5000, "dx": 20})                 # custom domain
+        g = Grid({"stratification": "isothermal"})        # stable base state
     """
 
     def __init__(self, params: dict = None):
 
-        # Merge user params with defaults
         cfg = {**DEFAULTS, **(params or {})}
 
         # ------------------------------------------------------------------
@@ -103,8 +97,8 @@ class Grid:
         self.dx = cfg["dx"]
         self.dz = cfg["dz"]
 
-        self.nx = int(round(self.Lx / self.dx))   # number of cells in x
-        self.nz = int(round(self.Lz / self.dz))   # number of cells in z
+        self.nx = int(round(self.Lx / self.dx))
+        self.nz = int(round(self.Lz / self.dz))
 
         assert np.isclose(self.nx * self.dx, self.Lx), "Lx not divisible by dx"
         assert np.isclose(self.nz * self.dz, self.Lz), "Lz not divisible by dz"
@@ -119,38 +113,28 @@ class Grid:
         self.p0  = cfg["p0"]
         self.T0  = cfg["T0"]
 
-        # Derived
         self.kappa = self.Rd / self.cp   # R/cp ~ 0.2857
 
         # ------------------------------------------------------------------
         # 3. Coordinate arrays (cell centres)
         # ------------------------------------------------------------------
-        # x: cell centres at (i + 0.5)*dx for i = 0,...,nx-1
-        self.x_1d = (np.arange(self.nx) + 0.5) * self.dx   # shape (nx,)
-
-        # z: cell centres at (k + 0.5)*dz for k = 0,...,nz-1
-        self.z_1d = (np.arange(self.nz) + 0.5) * self.dz   # shape (nz,)
-
-        # 2D coordinate grids — useful for setting initial conditions
-        # x_2d[k, i] = x-coordinate of point (i, k)
-        # z_2d[k, i] = z-coordinate of point (i, k)
+        self.x_1d = (np.arange(self.nx) + 0.5) * self.dx
+        self.z_1d = (np.arange(self.nz) + 0.5) * self.dz
         self.x_2d, self.z_2d = np.meshgrid(self.x_1d, self.z_1d)
-        # both shape: (nz, nx)
 
         # ------------------------------------------------------------------
         # 4. Base state profiles (function of z only)
         # ------------------------------------------------------------------
-        # Isothermal base state: constant temperature T0 everywhere.
-        # This satisfies hydrostatic balance:  d(pi_bar)/dz = -g/(cp*theta_bar)
-        #
-        # From this, we can show:
-        #   pi_bar(z) = (p_bar/p0)^(R/cp)
-        #   p_bar(z)  = p0 * exp(-g*z / (Rd*T0))   [exponential decay]
-        #   theta_bar = T0 / pi_bar                  [definition of theta]
-        #   d(theta_bar)/dz  (needed in equation 4)
+        # "isentropic" (DEFAULT): neutral stratification, dtheta_bar/dz = 0.
+        #   Matches G&R (2008) Case 2. Bubble rises freely to top of domain.
+        # "isothermal": stable stratification, theta_bar increases with height.
+        #   Brunt-Vaisala period ~350 s -> bubble oscillates, does NOT rise.
+        #   Wrong for rising-bubble benchmarks; kept for reference only.
+        self._stratification  = cfg.get("stratification", "isentropic")
+        self.diffusion_coeff  = float(cfg.get("diffusion_coeff", 0.0))
+        self.diffusion_order  = int(cfg.get("diffusion_order", 2))
 
         self.pi_bar, self.theta_bar, self.dtheta_bar_dz = self._build_base_state()
-        # all shape: (nz,)
 
         # ------------------------------------------------------------------
         # 5. Sponge layer
@@ -159,7 +143,6 @@ class Grid:
             frac     = cfg["sponge_fraction"],
             strength = cfg["sponge_strength"],
         )
-        # shape: (nz,)
 
     # -----------------------------------------------------------------------
     # Private: base state
@@ -167,36 +150,41 @@ class Grid:
 
     def _build_base_state(self):
         """
-        Compute isothermal hydrostatic base state profiles.
+        Compute hydrostatic base state profiles.
 
-        Equations:
-          p_bar(z) = p0 * exp(-g*z / (Rd*T0))   [from hydrostatic + ideal gas]
-          pi_bar   = (p_bar/p0)^kappa             [definition of Exner pressure]
-          theta_bar = T0 / pi_bar                 [definition of potential temp]
+        "isentropic"  (DEFAULT)
+          Neutral stratification: theta_bar = T0 = constant.
+          G&R (2008), most NWP benchmarks.
+            theta_bar = T0  (everywhere)
+            pi_bar    = 1 - g*z/(cp*T0)   (linear)
+            dtheta_bar_dz = 0  -> no restoring force -> bubble rises freely.
 
-        Also computes d(theta_bar)/dz which appears in equation (4):
-          ∂θ'/∂t = ... - w * d(θ_bar)/dz
+        "isothermal"
+          Stable stratification: temperature T0 = constant.
+          theta_bar increases with height -> bubble oscillates instead of rising.
+            p_bar     = p0 * exp(-g*z/(Rd*T0))
+            pi_bar    = (p_bar/p0)^kappa
+            theta_bar = T0 / pi_bar   (increases ~0.01 K/m for 1 km domain)
         """
-        z = self.z_1d   # z at cell centres, shape (nz,)
+        z     = self.z_1d
+        strat = self._stratification
 
-        # Background pressure (hydrostatic + isothermal)
-        p_bar = self.p0 * np.exp(-self.g * z / (self.Rd * self.T0))
+        if strat == "isentropic":
+            # Neutral base state: constant theta_bar, linear pi_bar
+            theta_bar     = np.full(self.nz, self.T0)
+            pi_bar        = 1.0 - self.g * z / (self.cp * self.T0)
+            dtheta_bar_dz = np.zeros(self.nz)
 
-        # Exner pressure
-        pi_bar = (p_bar / self.p0) ** self.kappa
+        else:
+            # Stable (isothermal) base state
+            p_bar     = self.p0 * np.exp(-self.g * z / (self.Rd * self.T0))
+            pi_bar    = (p_bar / self.p0) ** self.kappa
+            theta_bar = self.T0 / pi_bar
 
-        # Potential temperature
-        theta_bar = self.T0 / pi_bar
-
-        # Vertical gradient of theta_bar (needed for equation 4)
-        # Use centred differences in interior, one-sided at boundaries
-        dtheta_bar_dz = np.zeros(self.nz)
-        # Interior: centred
-        dtheta_bar_dz[1:-1] = (theta_bar[2:] - theta_bar[:-2]) / (2 * self.dz)
-        # Bottom boundary: forward difference
-        dtheta_bar_dz[0]    = (theta_bar[1] - theta_bar[0]) / self.dz
-        # Top boundary: backward difference
-        dtheta_bar_dz[-1]   = (theta_bar[-1] - theta_bar[-2]) / self.dz
+            dtheta_bar_dz        = np.zeros(self.nz)
+            dtheta_bar_dz[1:-1]  = (theta_bar[2:] - theta_bar[:-2]) / (2*self.dz)
+            dtheta_bar_dz[0]     = (theta_bar[1]  - theta_bar[0])   / self.dz
+            dtheta_bar_dz[-1]    = (theta_bar[-1] - theta_bar[-2])  / self.dz
 
         return pi_bar, theta_bar, dtheta_bar_dz
 
@@ -205,16 +193,13 @@ class Grid:
     # -----------------------------------------------------------------------
 
     def _build_sponge(self, frac, strength):
-        """
-        Rayleigh sponge in the top `frac` fraction of the domain.
-        alpha(z) ramps smoothly from 0 to `strength` using sin^2.
-        """
+        """Rayleigh sponge in the top frac fraction of the domain."""
         z_s   = (1.0 - frac) * self.Lz
         alpha = np.zeros(self.nz)
         mask  = self.z_1d >= z_s
         if np.any(mask):
-            zrel         = (self.z_1d[mask] - z_s) / (self.Lz - z_s)
-            alpha[mask]  = strength * np.sin(0.5 * np.pi * zrel) ** 2
+            zrel        = (self.z_1d[mask] - z_s) / (self.Lz - z_s)
+            alpha[mask] = strength * np.sin(0.5 * np.pi * zrel) ** 2
         return alpha
 
     # -----------------------------------------------------------------------
@@ -222,19 +207,7 @@ class Grid:
     # -----------------------------------------------------------------------
 
     def allocate_state(self):
-        """
-        Return zero-filled arrays for all 4 prognostic variables.
-
-        All variables have shape (nz, nx) — same grid, unstaggered.
-
-        Returns
-        -------
-        dict:
-            'u'     : (nz, nx)  horizontal velocity           [m/s]
-            'w'     : (nz, nx)  vertical velocity             [m/s]
-            'theta' : (nz, nx)  potential temp. perturbation  [K]
-            'pi'    : (nz, nx)  Exner pressure perturbation   [-]
-        """
+        """Return zero-filled state dict {u, w, theta, pi}, all shape (nz, nx)."""
         shape = (self.nz, self.nx)
         return {
             "u":     np.zeros(shape),
@@ -255,10 +228,13 @@ class Grid:
         print(f"  Domain     : {self.Lx} m x {self.Lz} m")
         print(f"  Spacing    : dx={self.dx} m,  dz={self.dz} m")
         print(f"  Cells      : nx={self.nx},  nz={self.nz}")
-        print(f"  Var shape  : {(self.nz, self.nx)}  (all variables same)")
-        print(f"  theta_bar  : {self.theta_bar.min():.2f} to {self.theta_bar.max():.2f} K")
+        print(f"  Var shape  : {(self.nz, self.nx)}")
+        print(f"  Strat.     : {self._stratification}")
+        print(f"  theta_bar  : {self.theta_bar.min():.2f} to {self.theta_bar.max():.2f} K"
+              f"  (dtheta/dz_max={self.dtheta_bar_dz.max():.5f} K/m)")
         print(f"  pi_bar     : {self.pi_bar.min():.4f} to {self.pi_bar.max():.4f}")
-        print(f"  Sponge     : top {int(0.2*100)}%  alpha_max={self.sponge.max():.4f}")
+        print(f"  Sponge     : top {int(self.sponge.__class__.__name__ and 0.2*100)}%"
+              f"  alpha_max={self.sponge.max():.4f}")
         print("=" * 50)
 
 
@@ -267,9 +243,11 @@ class Grid:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    print("=== ISENTROPIC (default) ===")
     g = Grid()
     g.info()
-    state = g.allocate_state()
-    print("\nAll variable shapes:")
-    for k, v in state.items():
-        print(f"  {k:6s}: {v.shape}")
+
+    print()
+    print("=== ISOTHERMAL (old) ===")
+    g2 = Grid({"stratification": "isothermal"})
+    g2.info()

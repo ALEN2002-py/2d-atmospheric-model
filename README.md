@@ -7,7 +7,7 @@
 University College Dublin &nbsp;|&nbsp; ACM40910 &nbsp;|&nbsp; Supervisor: Dr Colm Clancy (Met Éireann)
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
-![Status](https://img.shields.io/badge/Status-Phase%203%20%E2%80%94%20EPI%20Benchmarks-yellow)
+![Status](https://img.shields.io/badge/Status-Phase%204%20%E2%80%94%20Diffusion%20Comparison-yellow)
 ![License](https://img.shields.io/badge/License-Academic-lightgrey)
 
 </div>
@@ -359,10 +359,12 @@ python compare_schemes.py --schemes RK4 SI EPI2 EPI3
 | SI (IMEX Crank-Nicolson, GMRES) | ✅ |
 | EPI2 / EPI3 (Krylov sub-step, φ functions) | ✅ |
 | Zero-amplitude test — all 7 schemes | ✅ |
-| Convergence study (Robert small domain) | ✅ |
 | G&R (2008) Case 2 benchmark | ✅ |
 | G&R efficiency frontier (error vs wall time) | ✅ |
-| P&C (2022) Experiment 1 | ✅ |
+| P&C (2022) Experiment 1 benchmark | ✅ |
+| Hyperdiffusion (∇², ∇⁴, ∇⁸) + Shapiro filter | ✅ |
+| Diffusion comparison — G&R Case 2 | ✅ |
+| Diffusion comparison — P&C Exp 1 | ✅ |
 | Straka cold density current | ⚠️ pending |
 | Dissertation write-up | 🔜 Aug 2026 |
 

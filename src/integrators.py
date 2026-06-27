@@ -78,22 +78,15 @@ from dynamics import (compute_rhs, compute_linear_rhs,
 
 def step(state, grid, dt, scheme='RK4', state_old=None, epi_n_prev=None):
     """
-    Advance model state by one time step dt.
+    Advance the model state by one time step.
 
-    Parameters
-    ----------
-    state      : dict  — current state {u, w, theta, pi}
-    grid       : Grid
-    dt         : float — time step [s]
-    scheme     : str   — 'FTCS','BTCS','CTCS','RK4','SI','EPI2','EPI3'
-    state_old  : dict  — previous state (CTCS only, pass None for auto-bootstrap)
-    epi_n_prev : dict  — previous nonlinear RHS (EPI3 only; None on first step)
+    Returns a 3-tuple (state_new, state_prev, epi_extra).
+    state_prev is just the input state passed back for CTCS bookkeeping.
+    epi_extra is {'n_rhs': ...} for EPI2/EPI3, None for everything else.
 
-    Returns
-    -------
-    state_new  : dict
-    state_prev : dict  (= input state, for CTCS bookkeeping)
-    epi_extra  : dict  {'n_rhs': ...} for EPI2/EPI3, else None
+    scheme options: 'FTCS', 'BTCS', 'CTCS', 'RK4', 'SI', 'EPI2', 'EPI3'
+    state_old  needed for CTCS (leapfrog); auto-bootstraps with FTCS if None.
+    epi_n_prev needed for EPI3 to carry the previous-step nonlinear RHS.
     """
     if scheme == 'FTCS':
         return _ftcs(state, grid, dt), state, None
@@ -114,23 +107,28 @@ def step(state, grid, dt, scheme='RK4', state_old=None, epi_n_prev=None):
     elif scheme == 'EPI3':
         state_new, n_rhs = _epi3(state, grid, dt, n_prev=epi_n_prev)
         return state_new, state, {'n_rhs': n_rhs}
+    elif scheme == 'EPI2FJ':
+        state_new, extra = _epi2_fullJ(state, grid, dt)
+        return state_new, state, extra
+    elif scheme == 'EPI3FJ':
+        state_new, extra = _epi3_fullJ(state, grid, dt, prev_extra=epi_n_prev)
+        return state_new, state, extra
     else:
         raise ValueError(f"Unknown scheme '{scheme}'.")
 
 
 # ===========================================================================
-# Shapiro filter (Pudykiewicz & Clancy 2022, eq 5.6-5.7)
+# Shapiro filter  (Pudykiewicz & Clancy 2022, eqs 5.6-5.7)
 # ===========================================================================
 
 def shapiro_filter(state, grid):
     """
-    2D Shapiro (box) filter applied to all 4 state fields.
+    Separable 2D (1-2-1) box filter applied to all four state fields.
 
-    F = Fx * Fz  (applied sequentially, both separable):
-      Fx: f_i -> 1/4*f_{i-1} + 1/2*f_i + 1/4*f_{i+1}   (periodic in x)
-      Fz: f_j -> 1/4*f_{j-1} + 1/2*f_j + 1/4*f_{j+1}   (zero-gradient BCs at top/bottom)
-
-    Applied every 2 EPI time steps (call from run loop when (step+1) % 2 == 0).
+    Applied as Fz * Fx sequentially:
+      x-pass (periodic):      f_i  <- 0.25*f_{i-1} + 0.5*f_i + 0.25*f_{i+1}
+      z-pass (zero-gradient): f_k  <- 0.25*f_{k-1} + 0.5*f_k + 0.25*f_{k+1}
+                              with ghost values equal to boundary values at k=0, nz-1
     """
     def _filter_x(f):
         """1D box filter in x (periodic)."""
@@ -300,13 +298,24 @@ def _krylov_epi(L_apply, q_vec, c_vecs, m_max=30):
     p = len(c_vecs)
 
     beta = np.linalg.norm(q_vec)
+
+    # When q_vec is near-zero, start Krylov from c_vecs[0] instead.
+    # This enables phi-only computation needed by full-Jacobian EPI2/EPI3.
     if beta < 1e-15:
-        return np.zeros(n)
+        if p == 0:
+            return np.zeros(n)
+        c0_norm = np.linalg.norm(c_vecs[0])
+        if c0_norm < 1e-15:
+            return np.zeros(n)
+        start_vec = c_vecs[0] / c0_norm
+        beta = 0.0   # no exp(A)*q term; v0_s[0] will be 0
+    else:
+        start_vec = q_vec / beta
 
     m = min(m_max, n)
     V = np.zeros((m + 1, n))
     H = np.zeros((m + 1, m))
-    V[0] = q_vec / beta
+    V[0] = start_vec
     m_eff = m
 
     for j in range(m):
@@ -459,6 +468,192 @@ def _epi3(state, grid, dt, n_prev=None, p=None, m_sub=10):
     return _vec_to_state(y, grid), n_rhs
 
 
+
+
+# ===========================================================================
+# Full-Jacobian helper — matrix-free J_n * v via finite differencing
+# ===========================================================================
+
+def _jac_matvec_scaled(q0_flat, F0_flat, grid, v_flat, h, eps_rel=1e-7):
+    """
+    Returns  h * J_n * v  computed without forming J explicitly.
+
+    J_n * v  ≈  (F(q_n + ε·v) − F(q_n)) / ε   (finite difference)
+
+    ε is chosen so ||ε·v|| ≈ eps_rel * max(||q_n||, 1), giving ~1e-7
+    relative perturbation — large enough to avoid cancellation yet
+    small enough for linearity.
+
+    Parameters
+    ----------
+    q0_flat : 1-D numpy array   flat current state  q_n
+    F0_flat : 1-D numpy array   flat full RHS  F(q_n)  — precomputed
+    grid    : Grid
+    v_flat  : 1-D numpy array   Krylov test vector  v
+    h       : float             sub-step size (result is scaled by h)
+    eps_rel : float             relative perturbation (default 1e-7)
+    """
+    norm_v = np.linalg.norm(v_flat)
+    if norm_v < 1e-30:
+        return np.zeros_like(v_flat)
+    # ε scaled so that  ||ε·v|| / max(||q_n||, 1) ≈ eps_rel
+    scale = eps_rel * max(np.linalg.norm(q0_flat), 1.0) / norm_v
+    q1    = _vec_to_state(q0_flat + scale * v_flat, grid)
+    F1    = _state_to_vec(compute_rhs(q1, grid))
+    return h * (F1 - F0_flat) / scale
+
+
+# ===========================================================================
+# Scheme EPI2FJ — EPI2 with full Jacobian  (P&C 2022 eq 2.6, exact J_n)
+# ===========================================================================
+
+def _epi2_fullJ(state, grid, dt, p=None, m_sub=10):
+    """
+    EPI2 using the FULL Jacobian J_n = ∂F/∂u (matrix-free via finite diff).
+
+    Sub-step implementation (same structure as _epi2, but J_h replaces L_h):
+
+      v_0 = 0
+      v_{j+1} = exp(J_n·h)·v_j + φ₁(J_n·h)·h·F_n       j=0..p-1
+      u^{n+1} = u^n + v_p
+
+    J_n is frozen at u^n (not updated per sub-step) — consistent with P&C.
+    The sub-step size h = dt/p is chosen so that the spectral radius of
+    J_n·h stays ≤ 15 (same criterion as L-only EPI).
+
+    Key difference from L-only EPI2:
+      L_h propagates only acoustic modes.
+      J_h propagates acoustics + linearised advection → bubble rises correctly.
+
+    Cost per major step: p × m_sub full compute_rhs() calls (≈ 55 × 10 = 550
+    vs 550 compute_linear_rhs() for L-only), wall time ~3–5× slower per step.
+
+    Returns
+    -------
+    state_new : dict
+    extra     : dict  {'F_full': F0_flat, 'q_flat': q0_flat}
+                Pass as epi_n_prev at the next step for EPI3FJ.
+    """
+    q0 = _state_to_vec(state)
+    F0 = _state_to_vec(compute_rhs(state, grid))
+
+    if p is None:
+        cs = math.sqrt(grid.cp / grid.cv * grid.Rd * grid.T0)
+        p  = max(1, math.ceil(cs * math.pi / grid.dx * dt / 15.0))
+
+    h   = dt / p
+    c_h = h * F0   # constant forcing h·F(u_n)
+
+    # J_h: h-scaled Jacobian-vector product (matrix-free)
+    def J_h(v):
+        return _jac_matvec_scaled(q0, F0, grid, v, h)
+
+    v = np.zeros_like(q0)    # displacement from u_n (v_0 = 0)
+    for _ in range(p):
+        v = _krylov_epi(J_h, v, [c_h], m_max=m_sub)
+
+    extra = {'F_full': F0, 'q_flat': q0}
+    return _vec_to_state(q0 + v, grid), extra
+
+
+# ===========================================================================
+# Scheme EPI3FJ — EPI3 with full Jacobian  (P&C 2022 eq 2.7, exact J_n)
+# ===========================================================================
+
+def _epi3_fullJ(state, grid, dt, prev_extra=None, p=None, m_sub=10):
+    """
+    EPI3 using the FULL Jacobian J_n = ∂F/∂u (matrix-free via finite diff).
+
+    Sub-step formula (du/dt = J_n·u + F_n + (2/3)·R_{n-1}·t/dt with v=u-u_n):
+
+      v_0 = 0
+      c1_j = h·(F_n + (2/3)·R_{n-1}·j/p)      [linearly varying per sub-step]
+      c2   = h·(2/3)·R_{n-1}/p                   [constant, φ₂ correction]
+      v_{j+1} = exp(J_n·h)·v_j + φ₁(J_n·h)·c1_j + φ₂(J_n·h)·c2
+      u^{n+1} = u^n + v_p
+
+    Full-Jacobian remainder:
+      R^{n-1} = F^{n-1} − F^n − J_n·(u^{n-1} − u^n)
+
+    Bootstrap: first step (prev_extra=None) falls back to EPI2FJ.
+
+    Parameters
+    ----------
+    prev_extra : None | dict{'F_full': F_{n-1}, 'q_flat': q_{n-1}}
+
+    Returns
+    -------
+    state_new : dict
+    extra     : dict{'F_full': F0_flat, 'q_flat': q0_flat}
+    """
+    q0 = _state_to_vec(state)
+    F0 = _state_to_vec(compute_rhs(state, grid))
+
+    if p is None:
+        cs = math.sqrt(grid.cp / grid.cv * grid.Rd * grid.T0)
+        p  = max(1, math.ceil(cs * math.pi / grid.dx * dt / 15.0))
+
+    h = dt / p
+
+    def J_h(v):
+        return _jac_matvec_scaled(q0, F0, grid, v, h)
+
+    extra = {'F_full': F0, 'q_flat': q0}
+
+    # Check if prev_extra is valid (non-trivial F_prev)
+    F0_norm = np.linalg.norm(F0) + 1e-30
+    use_epi2 = (
+        prev_extra is None
+        or np.linalg.norm(prev_extra.get('F_full', np.array([0.0]))) < 0.01 * F0_norm
+    )
+
+    if use_epi2:
+        # Bootstrap: EPI2FJ (no R_{n-1} available yet)
+        c_h = h * F0
+        v = np.zeros_like(q0)
+        for _ in range(p):
+            v = _krylov_epi(J_h, v, [c_h], m_max=m_sub)
+        return _vec_to_state(q0 + v, grid), extra
+
+    # Full EPI3FJ with remainder correction
+    F_prev = prev_extra['F_full']
+    q_prev = prev_extra['q_flat']
+
+    # J_n·(q_{n-1} − q_n) via finite difference
+    dq = q_prev - q0
+    dq_norm = np.linalg.norm(dq)
+    if dq_norm > 1e-15:
+        eps_r  = 1e-7 * max(np.linalg.norm(q0), 1.0) / dq_norm
+        q1_fwd = _vec_to_state(q0 + eps_r * dq, grid)
+        F1_fwd = _state_to_vec(compute_rhs(q1_fwd, grid))
+        Jn_dq  = (F1_fwd - F0) / eps_r      # ≈ J_n · (q_{n-1} − q_n)
+    else:
+        Jn_dq = np.zeros_like(q0)
+
+    R_prev = F_prev - F0 - Jn_dq            # full-J remainder
+
+    # Stability guard: if the EPI3 correction is large relative to F_n,
+    # the 3rd-order correction term would dominate and destabilise.
+    # Fall back to EPI2FJ (still physically correct, just 2nd-order in time).
+    R_norm = np.linalg.norm(R_prev)
+    if R_norm > 3.0 * F0_norm:
+        c_h = h * F0
+        v = np.zeros_like(q0)
+        for _ in range(p):
+            v = _krylov_epi(J_h, v, [c_h], m_max=m_sub)
+        return _vec_to_state(q0 + v, grid), extra
+
+    c2 = h * (2.0 / 3.0) * R_prev / p      # φ₂ forcing (constant across sub-steps)
+
+    v = np.zeros_like(q0)
+    for j in range(p):
+        # φ₁ forcing: F_n + (2/3)·R_{n-1}·j/p  (varies linearly)
+        c1_j = h * (F0 + (2.0 / 3.0) * R_prev * (j / p))
+        v = _krylov_epi(J_h, v, [c1_j, c2], m_max=m_sub)
+
+    return _vec_to_state(q0 + v, grid), extra
+
+
 # ===========================================================================
 # State vector utilities
 # ===========================================================================
@@ -530,17 +725,4 @@ def _verify_phipm(m=10, n=20, seed=42):
     M_aug[:n, :n]  = A_full
     M_aug[:n, n]   = c2
     M_aug[:n, n+1] = c1
-    M_aug[n,  n+1] = 1.0
-    v0 = np.zeros(n+2); v0[:n] = q; v0[-1] = 1.0
-    ref = expm(M_aug) @ v0
-    def L_apply(v):
-        return A_full @ v
-    res = _krylov_epi(L_apply, q, [c1, c2], m_max=m)
-    err = np.linalg.norm(res - ref[:n]) / max(np.linalg.norm(ref[:n]), 1e-15)
-    print("  _verify_phipm: relative error = %.3e  (%s)" % (err, 'PASS' if err < 1e-3 else 'FAIL'))
-    return err
-
-
-if __name__ == "__main__":
-    _verify_phipm()
-    _verify_phi2_krylov()
+    
