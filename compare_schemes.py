@@ -70,13 +70,32 @@ SCHEME_ORDER = {s: i for i, s in enumerate(ALL_SCHEMES)}
 # ===========================================================================
 
 def make_initial_state(grid, bubble_amp=2.0):
+    """
+    Set up a Gaussian warm bubble initial condition.
+
+    theta'(x,z) = bubble_amp * exp(-r^2 / bubble_radius^2)
+
+    The bubble is centred at (Lx/2, 0.4*Lz) with e-folding radius
+    bubble_radius = 150 m. This is a generic test bubble (not the exact
+    G&R cosine bell); it is used by compare_schemes, efficiency_study,
+    warm_bubble, and menu.py for quick scheme comparisons.
+
+    Parameters
+    ----------
+    grid       : Grid
+    bubble_amp : float  — peak theta' perturbation [K]  (default 2.0)
+
+    Returns
+    -------
+    state : dict  — {u, w, theta, pi}, theta is the only non-zero field
+    """
     state = grid.allocate_state()
     if bubble_amp > 0:
-        xc   = grid.Lx / 2.0
-        zc   = grid.Lz * 0.4
-        r    = 150.0
-        r_sq = (grid.x_2d - xc)**2 + (grid.z_2d - zc)**2
-        state["theta"] = bubble_amp * np.exp(-r_sq / r**2)
+        xc            = grid.Lx / 2.0   # horizontal centre [m]
+        zc            = grid.Lz * 0.4   # vertical centre [m] — lower than mid-domain
+        bubble_radius = 150.0           # e-folding radius [m]
+        r_sq          = (grid.x_2d - xc)**2 + (grid.z_2d - zc)**2
+        state["theta"] = bubble_amp * np.exp(-r_sq / bubble_radius**2)
     return state
 
 

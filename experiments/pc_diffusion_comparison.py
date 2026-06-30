@@ -44,6 +44,11 @@ import types
 # Dynamic module loading
 # ---------------------------------------------------------------------------
 def _load_src(name, path):
+    """Load a .py source file as a named module without installing the package.
+
+    Executes the source via compile()+exec() so imports are always
+    resolved from the live .py file, bypassing any stale .pyc bytecache.
+    """
     mod = types.ModuleType(name)
     mod.__file__ = os.path.abspath(path)
     sys.modules[name] = mod
@@ -121,6 +126,11 @@ def _kappa(order, dx, dt):
 # Initial condition — cylindrical flat-top + Gaussian edge (P&C eq. 6.1)
 # ---------------------------------------------------------------------------
 def make_ic(grid):
+    """P&C (2022) Experiment 1 initial condition: flat-top bubble with Gaussian edge.
+
+    theta' = AT                            for r <= A_RAD   (flat cylindrical core)
+    theta' = AT * exp(-(r-A_RAD)^2/2s^2)  for r >  A_RAD   (smooth Gaussian tail)
+    """
     state = grid.allocate_state()
     r = np.sqrt((grid.x_2d - X0)**2 + (grid.z_2d - Z0)**2)
     state["theta"] = np.where(
@@ -133,13 +143,16 @@ def make_ic(grid):
 # ---------------------------------------------------------------------------
 # Run one variant, saving snapshots at SNAP_T
 # ---------------------------------------------------------------------------
-def run_variant(label, dx, dt, grid_params, snap_times=SNAP_T):
+def run_variant(label, dx, dt, grid_params, snap_times=SNAP_T, shapiro_period=30.0):
     params = {"Lx": LX, "Lz": LZ, "dx": dx, "dz": dx, **grid_params}
     grid  = Grid(params)
     state = make_ic(grid)
 
     use_shapiro   = grid_params.pop("_shapiro", False)
-    shapiro_every = max(1, int(round(30.0 / dt)))   # every ~30 s physical time
+    if not shapiro_period or shapiro_period <= dt:
+        shapiro_every = 1
+    else:
+        shapiro_every = max(1, int(round(shapiro_period / dt)))
 
     snaps       = {}
     nstep_total = int(round(T_END / dt))
@@ -340,6 +353,60 @@ def print_summary_table(labels, all_stats, dx):
     print(sep2); print()
 
 # ---------------------------------------------------------------------------
+# Vertical profile plot — theta' at x = X0 m, t = T_END s
+# ---------------------------------------------------------------------------
+def plot_vertical_profile(all_snaps, variant_labels, dx, out_path):
+    STYLES = [
+        {"color": "#1a1a1a", "lw": 2.2, "ls": "-",           "zorder": 10},  # IDEAL
+        {"color": "#d62728", "lw": 1.6, "ls": "--",          "zorder":  6},  # nabla2
+        {"color": "#ff7f0e", "lw": 1.6, "ls": "-.",          "zorder":  7},  # nabla4
+        {"color": "#2ca02c", "lw": 1.6, "ls": ":",           "zorder":  8},  # nabla8
+        {"color": "#9467bd", "lw": 1.6, "ls": (0, (4, 1.5)), "zorder":  9},  # Shapiro
+        {"color": "#17becf", "lw": 1.8, "ls": (0, (6, 2)),   "zorder": 11},  # IDEAL tiny
+    ]
+
+    nz = int(round(LZ / dx))
+    z_km = (np.arange(nz) + 0.5) * dx / 1000.0
+
+    nx = int(round(LX / dx))
+    x_centres = (np.arange(nx) + 0.5) * dx
+    ix = int(np.argmin(np.abs(x_centres - X0)))
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+
+    for i, (snaps, label, style) in enumerate(zip(all_snaps, variant_labels, STYLES)):
+        th = snaps.get(T_END)
+        if th is None:
+            th = snaps[max(snaps.keys())]
+        profile = th[:, ix]
+        ax.plot(z_km, profile, label=label,
+                color=style["color"], lw=style["lw"],
+                ls=style["ls"], zorder=style["zorder"])
+
+    ax.set_xlabel("z [km]", fontsize=12)
+    ax.set_ylabel(r"$\theta'$ [K]", fontsize=12)
+    ax.set_title(
+        f"Vertical profile of $\\theta'$ at $x = {X0:.0f}$ m,  $t = {int(T_END)}$ s\n"
+        f"P&C Exp 1  (dx = {dx} m)",
+        fontsize=11,
+    )
+    ax.set_xlim(0, LZ / 1000)
+    ax.set_ylim(bottom=-0.02)
+    ax.xaxis.set_major_locator(plt.MultipleLocator(0.5))
+    ax.yaxis.set_major_locator(plt.MultipleLocator(0.1))
+    ax.grid(axis="x", color="#ddd", lw=0.6, zorder=0)
+    ax.grid(axis="y", color="#ddd", lw=0.6, zorder=0)
+    ax.legend(fontsize=9, loc="upper left", framealpha=0.9,
+              edgecolor="#ccc", handlelength=2.8)
+
+    fig.tight_layout()
+    plt.savefig(out_path, dpi=160, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.close(fig)
+    print(f"  Saved: {out_path}", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -347,11 +414,15 @@ def main():
         description="P&C Exp 1 diffusion comparison — evolution grid")
     parser.add_argument("--dx", type=float, default=20.0,
                         help="Grid spacing [m] (default 20, paper uses 20)")
+    parser.add_argument("--shapiro-period", type=float, default=30.0,
+                        help="Shapiro filter interval in simulation seconds "
+                             "(default 30; use 0 for every step)")
     args = parser.parse_args()
 
     dx      = args.dx
     dt      = CFL * dx / CS
     dt_tiny = dt / 5.0
+    sp = args.shapiro_period if args.shapiro_period > 0 else None
 
     k2 = _kappa(2, dx, dt)
     k4 = _kappa(4, dx, dt)
@@ -373,7 +444,7 @@ def main():
          dt,  {"diffusion_coeff": k4, "diffusion_order": 4}),
         (f"nabla8  (k8={k8:.2e} m8/s)",
          dt,  {"diffusion_coeff": k8, "diffusion_order": 8}),
-        ("Shapiro (every ~30 s)",
+        (f"Shapiro (every {sp if sp else 'step'} s)",
          dt,  {"_shapiro": True}),
         ("IDEAL tiny dt (ref)",
          dt_tiny, {}),
@@ -384,7 +455,7 @@ def main():
     labels    = []
     for label, vdt, gp in variants:
         print(f"Running: {label}", flush=True)
-        snaps, stats = run_variant(label, dx, vdt, dict(gp))
+        snaps, stats = run_variant(label, dx, vdt, dict(gp), shapiro_period=sp)
         stats["dt"] = vdt
         all_snaps.append(snaps)
         all_stats.append(stats)
@@ -393,6 +464,9 @@ def main():
     out = os.path.join(OUT_DIR, f"pc_diffcomp_evolution_dx{int(dx)}m.png")
     plot_evolution_grid(all_snaps, labels, dx, out)
     print_summary_table(labels, all_stats, dx)
+
+    out_vp = os.path.join(OUT_DIR, f"pc_diffcomp_vprofile_dx{int(dx)}m.png")
+    plot_vertical_profile(all_snaps, labels, dx, out_vp)
 
 
 if __name__ == "__main__":

@@ -48,9 +48,9 @@ SCHEMES = {
     "1": {"name": "FTCS  — Forward Time Centred Space",        "key": "FTCS",
           "order": "1st", "type": "Explicit",
           "stability": "Unconditionally unstable for oscillatory problems."},
-    "2": {"name": "BTCS  — Backward Time Centred Space",       "key": "BTCS",
-          "order": "1st", "type": "Implicit (1 Picard iter)",
-          "stability": "More stable than FTCS. Not fully implicit."},
+    "2": {"name": "BTCS  — Heun's method (mislabelled)",        "key": "BTCS",
+          "order": "2nd", "type": "Explicit (predictor-corrector)",
+          "stability": "2nd-order Heun. NOT backward Euler despite the name."},
     "3": {"name": "CTCS  — Leapfrog (Robert-Asselin filter)",  "key": "CTCS",
           "order": "2nd", "type": "Explicit",
           "stability": "Neutral amplitude. Filter applied (alpha=0.1)."},
@@ -58,8 +58,8 @@ SCHEMES = {
           "order": "4th", "type": "Explicit",
           "stability": "Max stable wDt=2.82. Primary explicit scheme."},
     "5": {"name": "SI    — Semi-Implicit IMEX",                "key": "SI",
-          "order": "2nd", "type": "Semi-implicit",
-          "stability": "Removes acoustic CFL. L implicit via GMRES."},
+          "order": "1st", "type": "Semi-implicit",
+          "stability": "1st order: N explicit, L implicit via GMRES. No acoustic CFL."},
     "6": {"name": "EPI2  — Exponential Propagation Iterative", "key": "EPI2",
           "order": "2nd", "type": "Exponential (Krylov)",
           "stability": "e^(L*dt) via Arnoldi. No CFL on L."},
@@ -105,9 +105,9 @@ def _run(scheme_key, bubble_amp, dt, n_steps):
     if bubble_amp > 0:
         xc   = grid.Lx / 2.0
         zc   = grid.Lz * 0.4
-        r    = 150.0
+        bubble_radius = 150.0   # e-folding radius of Gaussian bubble [m]
         r_sq = (grid.x_2d - xc)**2 + (grid.z_2d - zc)**2
-        state["theta"] = bubble_amp * np.exp(-r_sq / r**2)
+        state["theta"] = bubble_amp * np.exp(-r_sq / bubble_radius**2)
 
     gamma   = grid.cp / grid.cv
     c_sound = np.sqrt(gamma * grid.Rd * grid.T0)

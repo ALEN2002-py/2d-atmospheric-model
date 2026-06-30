@@ -35,6 +35,11 @@ import types
 # Dynamic module loading
 # ---------------------------------------------------------------------------
 def _load_src(name, path):
+    """Load a .py source file as a named module without installing the package.
+
+    Executes the source via compile()+exec() so imports are always
+    resolved from the live .py file, bypassing any stale .pyc bytecache.
+    """
     mod = types.ModuleType(name)
     mod.__file__ = os.path.abspath(path)
     sys.modules[name] = mod
@@ -62,13 +67,13 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # ---------------------------------------------------------------------------
 # G&R Case 2 parameters (Section 3.2, paper page 3855)
 # ---------------------------------------------------------------------------
-LX, LZ   = 1000.0, 1000.0
-THETA_C  = 0.5      # K   bubble amplitude
-R_C      = 250.0    # m   bubble radius
-X_C      = 500.0    # m   bubble centre x
-Z_C      = 350.0    # m   bubble centre z
-T_END    = 700.0    # s
-SNAP_T   = [0, 100, 200, 300, 400, 500, 600, 700]   # s
+LX, LZ   = 1000.0, 1000.0   # domain size [m]
+THETA_C  = 0.5      # K   bubble amplitude (G&R 2008 eq 3.1)
+R_C      = 250.0    # m   bubble radius (cosine bell extends to 250 m from centre)
+X_C      = 500.0    # m   bubble centre x (middle of domain)
+Z_C      = 350.0    # m   bubble centre z (below mid-domain to give room to rise)
+T_END    = 700.0    # s   simulation end time (mushroom cap fully formed by ~700 s)
+SNAP_T   = [0, 100, 200, 300, 400, 500, 600, 700]   # s  snapshot times
 
 # Contour levels matching G&R Figure 3 (page 3866)
 CLEV = np.arange(0.05, 0.526, 0.025)
@@ -118,7 +123,7 @@ def make_ic(grid):
 # ---------------------------------------------------------------------------
 # Run one variant, saving snapshots at SNAP_T
 # ---------------------------------------------------------------------------
-def run_variant(label, dx, dt, grid_params, snap_times=SNAP_T):
+def run_variant(label, dx, dt, grid_params, snap_times=SNAP_T, shapiro_period=30.0):
     """
     Run G&R Case 2 with given grid_params, saving theta fields at snap_times.
 
@@ -126,15 +131,19 @@ def run_variant(label, dx, dt, grid_params, snap_times=SNAP_T):
       diffusion_coeff  — kappa
       diffusion_order  — 2, 4, or 8
       _shapiro         — True to apply Shapiro filter
+
+    shapiro_period: simulation seconds between filter applications.
+                   None or 0 → every step.
     """
     params = {"Lx": LX, "Lz": LZ, "dx": dx, "dz": dx, **grid_params}
     grid  = Grid(params)
     state = make_ic(grid)
 
     use_shapiro = grid_params.pop("_shapiro", False)
-    # Apply Shapiro every ~30 s of simulation time (P&C equivalent: 2 x 15 s EPI steps)
-    shapiro_period = 30.0
-    shapiro_every  = max(1, int(round(shapiro_period / dt)))
+    if not shapiro_period or shapiro_period <= dt:
+        shapiro_every = 1
+    else:
+        shapiro_every = max(1, int(round(shapiro_period / dt)))
 
     snaps       = {}
     nstep_total = int(round(T_END / dt))
@@ -361,18 +370,86 @@ def print_summary_table(labels, all_stats, dx):
 
 
 # ---------------------------------------------------------------------------
+# Vertical profile plot — theta' at x = 500 m, t = 700 s
+# ---------------------------------------------------------------------------
+def plot_vertical_profile(all_snaps, variant_labels, dx, out_path):
+    """
+    Overlay the vertical profile of theta' at x = 500 m, t = 700 s
+    for all 6 variants on a single axes.
+
+    Mirrors G&R (2008) Fig. 4 but with z on the vertical axis (correct orientation).
+    The x = 500 m column is the centre of the domain, where the bubble rises.
+    """
+    # Colour/style for each variant — distinct and accessible
+    STYLES = [
+        {"color": "#1a1a1a", "lw": 2.2, "ls": "-",  "zorder": 10, "label": None},  # IDEAL
+        {"color": "#d62728", "lw": 1.6, "ls": "--", "zorder": 6,  "label": None},  # nabla2
+        {"color": "#ff7f0e", "lw": 1.6, "ls": "-.", "zorder": 7,  "label": None},  # nabla4
+        {"color": "#2ca02c", "lw": 1.6, "ls": ":",  "zorder": 8,  "label": None},  # nabla8
+        {"color": "#9467bd", "lw": 1.6, "ls": (0, (4, 1.5)), "zorder": 9, "label": None},  # Shapiro
+        {"color": "#17becf", "lw": 1.8, "ls": (0, (6, 2)), "zorder": 11, "label": None},  # IDEAL tiny
+    ]
+
+    # Grid for z axis
+    nz = int(round(LZ / dx))
+    z_km = (np.arange(nz) + 0.5) * dx / 1000.0  # cell centres in km
+
+    # x index nearest to 500 m
+    nx = int(round(LX / dx))
+    x_centres = (np.arange(nx) + 0.5) * dx
+    ix = int(np.argmin(np.abs(x_centres - X_C)))
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+
+    for i, (snaps, label, style) in enumerate(zip(all_snaps, variant_labels, STYLES)):
+        th = snaps.get(T_END)
+        if th is None:
+            th = snaps[max(snaps.keys())]
+        profile = th[:, ix]   # shape (nz,)
+        ax.plot(z_km, profile, label=label,
+                color=style["color"], lw=style["lw"],
+                ls=style["ls"], zorder=style["zorder"])
+
+    ax.set_xlabel("z [km]", fontsize=12)
+    ax.set_ylabel(r"$\theta'$ [K]", fontsize=12)
+    ax.set_title(
+        f"Vertical profile of $\\theta'$ at $x = 500$ m,  $t = {int(T_END)}$ s\n"
+        f"G&R Case 2  (dx = {dx} m)",
+        fontsize=11,
+    )
+    ax.set_xlim(0, LZ / 1000)
+    ax.set_ylim(bottom=-0.02)
+    ax.xaxis.set_major_locator(plt.MultipleLocator(0.2))
+    ax.yaxis.set_major_locator(plt.MultipleLocator(0.1))
+    ax.grid(axis="x", color="#ddd", lw=0.6, zorder=0)
+    ax.grid(axis="y", color="#ddd", lw=0.6, zorder=0)
+    ax.legend(fontsize=9, loc="upper left", framealpha=0.9,
+              edgecolor="#ccc", handlelength=2.8)
+
+    fig.tight_layout()
+    plt.savefig(out_path, dpi=160, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.close(fig)
+    print(f"  Saved: {out_path}", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="G&R Case 2 diffusion comparison — evolution grid")
+        description="G&R Case 2 diffusion comparison — evolution grid + vertical profile")
     parser.add_argument("--dx", type=float, default=20.0,
                         help="Grid spacing [m] (default 20)")
+    parser.add_argument("--shapiro-period", type=float, default=30.0,
+                        help="Shapiro filter interval in simulation seconds "
+                             "(default 30; use 0 for every step)")
     args = parser.parse_args()
 
     dx = args.dx
-    dt = CFL * dx / CS          # CFL-stable timestep
-    dt_tiny = dt / 5.0          # 5x smaller for the 'ideal tiny dt' variant
+    dt = CFL * dx / CS
+    dt_tiny = dt / 5.0
+    sp = args.shapiro_period if args.shapiro_period > 0 else None
 
     k2 = _kappa(2, dx, dt)
     k4 = _kappa(4, dx, dt)
@@ -384,7 +461,6 @@ def main():
     print(f"  kappa2={k2:.2f}  kappa4={k4:.1f}  kappa8={k8:.2e}")
     print(f"{'='*65}\n")
 
-    # Define all 6 variants
     variants = [
         ("IDEAL  (no diffusion)",
          dt,  {}),
@@ -394,23 +470,30 @@ def main():
          dt,  {"diffusion_coeff": k4, "diffusion_order": 4}),
         (f"nabla8  (k8={k8:.2e} m8/s)",
          dt,  {"diffusion_coeff": k8, "diffusion_order": 8}),
-        ("Shapiro (every ~30 s)",
+        (f"Shapiro (every {sp if sp else 'step'} s)",
          dt,  {"_shapiro": True}),
         ("IDEAL tiny dt (ref)",
          dt_tiny, {}),
     ]
 
-    all_snaps  = []
-    all_stats  = []
-    labels     = []
+    all_snaps = []
+    all_stats = []
+    labels    = []
     for label, vdt, gp in variants:
         print(f"Running: {label}", flush=True)
-        snaps, stats = run_variant(label, dx, vdt, dict(gp))
+        snaps, stats = run_variant(label, dx, vdt, dict(gp), shapiro_period=sp)
         stats["dt"] = vdt
         all_snaps.append(snaps)
         all_stats.append(stats)
         labels.append(label)
 
-    out = os.path.join(OUT_DIR, f"diffcomp_evolution_dx{int(dx)}m.png")
-    plot_evolution_grid(all_snaps, labels, dx, out)
-    print_summary_table(labels, all_stats, 
+    out_evo = os.path.join(OUT_DIR, f"diffcomp_gr_dx{int(dx)}m.png")
+    plot_evolution_grid(all_snaps, labels, dx, out_evo)
+    print_summary_table(labels, all_stats, dx)
+
+    out_vp = os.path.join(OUT_DIR, f"diffcomp_gr_vprofile_dx{int(dx)}m.png")
+    plot_vertical_profile(all_snaps, labels, dx, out_vp)
+
+
+if __name__ == "__main__":
+    main()

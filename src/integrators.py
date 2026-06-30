@@ -677,7 +677,7 @@ def _vec_to_state(vec, grid):
 
 # ===========================================================================
 # Unit tests
-# =======
+# ===========================================================================
 
 
 def _verify_phi2_krylov(m=15, n=20, seed=42):
@@ -725,4 +725,36 @@ def _verify_phipm(m=10, n=20, seed=42):
     M_aug[:n, :n]  = A_full
     M_aug[:n, n]   = c2
     M_aug[:n, n+1] = c1
-    
+    M_aug[n,   n+1] = 1.0   # phi structure: row n links phi1 and phi2 columns
+
+    # Initial vector: [q; 0; 1] — last entry seeds the phi polynomial
+    v0 = np.zeros(n + 2)
+    v0[:n] = q
+    v0[-1] = 1.0
+
+    # Reference: direct matrix exponential applied to augmented system
+    # Result[:n] == exp(A_full)*q + phi1(A_full)*c1 + phi2(A_full)*c2
+    ref = expm(M_aug) @ v0
+
+    def L_a(v):
+        return A_full @ v
+
+    res = _krylov_epi(L_a, q, [c1, c2], m_max=n)   # full Krylov space -> exact
+
+    err = np.linalg.norm(res - ref[:n]) / max(np.linalg.norm(ref[:n]), 1e-15)
+    print("  _verify_phipm:        relative error = %.3e  (%s)"
+          % (err, 'PASS' if err < 1e-3 else 'FAIL'))
+    return err
+
+
+# ===========================================================================
+# Self-test entry point
+# ===========================================================================
+
+if __name__ == "__main__":
+    print("\n  integrators.py — self-test\n")
+    print("  Verifying Krylov phi-function computations:")
+    _verify_phipm()
+    print()
+    print("  To run the full zero-amplitude unit tests across all schemes,")
+    print("  use:  python tests/test_integrators.py")

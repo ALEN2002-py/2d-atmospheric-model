@@ -49,9 +49,9 @@ def run_and_snap(scheme, bubble_amp, dt, n_steps,
     if bubble_amp > 0:
         xc   = grid.Lx / 2.0
         zc   = grid.Lz * 0.4
-        r    = 150.0
+        bubble_radius = 150.0   # e-folding radius of Gaussian bubble [m]
         r_sq = (grid.x_2d - xc)**2 + (grid.z_2d - zc)**2
-        state["theta"] = bubble_amp * np.exp(-r_sq / r**2)
+        state["theta"] = bubble_amp * np.exp(-r_sq / bubble_radius**2)
 
     # Always save t=0
     snapshots = [(0.0, {k: v.copy() for k, v in state.items()})]

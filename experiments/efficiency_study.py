@@ -57,7 +57,7 @@ def compute_reference(bubble_amp=2.0, ref_dt=0.002, t_end=2.0,
     zc   = grid.Lz * 0.4
     r    = 150.0
     r_sq = (grid.x_2d - xc)**2 + (grid.z_2d - zc)**2
-    state["theta"] = bubble_amp * np.exp(-r_sq / r**2)
+    state["theta"] = bubble_amp * np.exp(-r_sq / bubble_radius**2)
 
     t = 0.0
     for n in range(n_steps):
@@ -117,7 +117,7 @@ def run_scheme(scheme, bubble_amp, dt, t_end, ref_state, grid):
     zc   = grid.Lz * 0.4
     r    = 150.0
     r_sq = (grid.x_2d - xc)**2 + (grid.z_2d - zc)**2
-    state["theta"] = bubble_amp * np.exp(-r_sq / r**2)
+    state["theta"] = bubble_amp * np.exp(-r_sq / bubble_radius**2)
 
     t_wall = 0.0
     t      = 0.0
@@ -127,7 +127,7 @@ def run_scheme(scheme, bubble_amp, dt, t_end, ref_state, grid):
         # Save φ^(n-1) BEFORE step() overwrites s_old with φ^n
         s_prev = s_old
         try:
-            state_new, s_old = step(state, grid, dt,
+            state_new, s_old, _ = step(state, grid, dt,
                                     scheme=scheme,
                                     state_old=s_old)
         except Exception:

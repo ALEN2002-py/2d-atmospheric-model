@@ -45,6 +45,11 @@ import types
 
 
 def _load_src(name, path):
+    """Load a .py source file as a named module without installing the package.
+
+    Executes the source via compile()+exec() so imports are always
+    resolved from the live .py file, bypassing any stale .pyc bytecache.
+    """
     mod = types.ModuleType(name)
     mod.__file__ = os.path.abspath(path)
     sys.modules[name] = mod
@@ -104,6 +109,24 @@ SNAP_TIMES = [0, 300, 600, 900, 1200, 1800]
 # ---------------------------------------------------------------------------
 
 def make_state(grid):
+    """
+    Set up P&C (2022) Experiment 1 initial condition (Section 6.1).
+
+    The bubble has a flat-top cylindrical core with a smooth Gaussian edge:
+      theta' = AT                              for r <= a   (flat top)
+      theta' = AT * exp(-(r-a)^2/(2*sigma^2)) for r >  a   (Gaussian decay)
+
+    This differs from the G&R cosine bell (which tapers to zero at r=r_c).
+    The flat-top shape means theta'=AT everywhere inside the core radius a.
+
+    Parameters
+    ----------
+    grid : Grid  — provides x_2d, z_2d coordinate arrays
+
+    Returns
+    -------
+    state : dict  — {u, w, theta, pi}; only theta is non-zero
+    """
     state = grid.allocate_state()
     r = np.sqrt((grid.x_2d - PAPER["x0"])**2
               + (grid.z_2d - PAPER["z0"])**2)

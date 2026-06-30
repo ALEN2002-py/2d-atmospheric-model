@@ -38,9 +38,26 @@ from results     import save_experiment
 
 def set_initial_conditions(state, grid, bubble_amp=2.0,
                            bubble_r=150.0):
+    """
+    Place a Gaussian warm bubble in an otherwise undisturbed state.
+
+    theta'(x,z) = bubble_amp * exp(-r^2 / bubble_r^2)
+
+    Centred at (Lx/2, 0.4*Lz). Default radius bubble_r=150 m is the
+    generic test radius used by run_model, menu, and compare_schemes.
+    The G&R (2008) benchmark instead uses a cosine bell at r_c=250 m —
+    see experiments/gr_case2_benchmark.py.
+
+    Parameters
+    ----------
+    state      : dict  — pre-allocated state (modified in-place and returned)
+    grid       : Grid
+    bubble_amp : float — peak theta' [K]  (default 2.0)
+    bubble_r   : float — e-folding radius [m]  (default 150.0)
+    """
     if bubble_amp > 0:
-        xc   = grid.Lx / 2.0
-        zc   = grid.Lz * 0.4
+        xc   = grid.Lx / 2.0   # horizontal centre [m]
+        zc   = grid.Lz * 0.4   # vertical centre [m]
         r_sq = (grid.x_2d - xc)**2 + (grid.z_2d - zc)**2
         state["theta"] = bubble_amp * np.exp(-r_sq / bubble_r**2)
     return state

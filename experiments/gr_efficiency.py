@@ -42,6 +42,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 
 def _load_src(name, path):
+    """Load a .py source file as a named module without installing the package.
+
+    Executes the source via compile()+exec() so imports are always
+    resolved from the live .py file, bypassing any stale .pyc bytecache.
+    """
     mod = types.ModuleType(name)
     mod.__file__ = os.path.abspath(path)
     sys.modules[name] = mod
@@ -78,10 +83,14 @@ RES_SAVE = os.path.join(RESULTS_DIR, "gr_efficiency_results.json")
 # ---------------------------------------------------------------------------
 
 GR = dict(
-    Lx=1000., Lz=1000., dx=10., dz=10.,
-    theta_c=0.5, rc=250., xc=500., zc=350.,
-    t_end=700.,
-    dt_ref=0.005,          # reference: RK4 at 5 ms  (140 000 steps)
+    Lx=1000., Lz=1000.,   # domain [m]
+    dx=10.,   dz=10.,      # grid spacing [m]
+    theta_c=0.5,           # bubble amplitude [K]
+    rc=250.,               # bubble radius [m]
+    xc=500.,               # bubble centre x [m]
+    zc=350.,               # bubble centre z [m]
+    t_end=700.,            # simulation end time [s]
+    dt_ref=0.005,          # reference dt: RK4 at 5 ms  (140 000 steps)
 )
 
 # dt values per scheme
@@ -102,6 +111,7 @@ MARKERS = {'RK4': 'o', 'SI': 's', 'EPI2': '^', 'EPI3': 'D'}
 # ---------------------------------------------------------------------------
 
 def make_ic(grid):
+    """Cosine-bell thermal bubble initial condition (G&R 2008, eq. 3.1)."""
     r = np.sqrt((grid.x_2d - GR['xc'])**2 + (grid.z_2d - GR['zc'])**2)
     state = grid.allocate_state()
     state['theta'] = np.where(

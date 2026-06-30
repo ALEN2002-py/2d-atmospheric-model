@@ -1,10 +1,16 @@
 """
 experiments/warm_bubble.py
 ==========================
-Warm bubble benchmark — Robert (1993).
+Quick warm bubble runner — generic scheme comparison on a 1 km x 1 km domain.
 
-Runs all available schemes at matched settings and saves results.
-Produces heatmap plots for comparison.
+Places a Gaussian theta' bubble (default 2 K amplitude, 150 m e-folding radius)
+in the 1 km x 1 km G&R grid and runs any scheme for a chosen number of steps.
+Saves theta' and w heatmaps.
+
+NOTE: This script uses a small generic domain (1 km, t ~ 10 s) so the bubble
+barely moves. To see the full mushroom-cap vortex structure, use:
+  experiments/gr_case2_benchmark.py   — G&R cosine bell, t=700 s, 1 km domain
+  experiments/robert_bubble.py        — correct Robert (1993) 10 km domain, t=15 min
 
 Usage
 -----
@@ -48,7 +54,7 @@ def run_warm_bubble(scheme='CTCS', bubble_amp=2.0, dt=0.01,
     zc   = grid.Lz * 0.4
     r    = 150.0
     r_sq = (grid.x_2d - xc)**2 + (grid.z_2d - zc)**2
-    state["theta"] = bubble_amp * np.exp(-r_sq / r**2)
+    state["theta"] = bubble_amp * np.exp(-r_sq / bubble_radius**2)
 
     gamma   = grid.cp / grid.cv
     c_sound = np.sqrt(gamma * grid.Rd * grid.T0)
@@ -109,7 +115,19 @@ def run_warm_bubble(scheme='CTCS', bubble_amp=2.0, dt=0.01,
 
 
 def plot_bubble_snapshots(snapshots, grid, scheme, variable='theta'):
-    """Plot 2D heatmaps at each saved time."""
+    """
+    Plot pcolormesh heatmaps of one variable at each saved snapshot time.
+
+    Uses a symmetric diverging colormap (vmin=-vmax) so that acoustic
+    pressure waves (negative theta' perturbations) are visible.
+
+    Parameters
+    ----------
+    snapshots : list of (t, state) tuples — from run_warm_bubble()
+    grid      : Grid
+    scheme    : str   — scheme name (used in title and filename)
+    variable  : str   — 'theta' or 'w' (default 'theta')
+    """
     n = len(snapshots)
     fig, axes = plt.subplots(1, n, figsize=(3.5*n, 4))
     if n == 1:
