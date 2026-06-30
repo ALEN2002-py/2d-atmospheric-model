@@ -158,7 +158,7 @@ $$\bar{\theta}(z) = \frac{T_0}{\bar{\pi}(z)}$$
 
 ## 7. Governing Equations
 
-**Source:** Equation set 1 of Giraldo & Restelli (2008), as specified by Dr Clancy.
+**Source:** Equation set 1 of Giraldo & Restelli (2008)
 
 ---
 
