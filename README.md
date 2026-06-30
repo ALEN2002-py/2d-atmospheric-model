@@ -408,6 +408,8 @@ python compare_schemes.py --schemes RK4 SI EPI2 EPI3
 4. **Straka, J.M. et al. (1993).** Numerical solutions of a non-linear density current: A benchmark solution and comparisons. *Int. J. Numer. Methods Fluids*, **17**, 1–22.
 5. **Hochbruck, M. & Ostermann, A. (2010).** Exponential integrators. *Acta Numerica*, **19**, 209–286.
 6. **Kalnay, E. (2003).** *Atmospheric Modelling, Data Assimilation and Predictability*. Cambridge University Press.
+7. **Jablonowski, C. & Williamson, D.L. (2011).** The pros and cons of diffusion, filters and fixers in atmospheric general circulation models. In: *Numerical Techniques for Global Atmospheric Models*, Lecture Notes in Computational Science and Engineering, **80**, Chapter 13, Springer.
+
 
 ---
 
