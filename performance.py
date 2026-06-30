@@ -1,7 +1,7 @@
 """
 performance.py
 ==============
-Item 6 from Dr Clancy: compare np.roll vs explicit for-loop
+compare np.roll vs explicit for-loop
 for computing finite differences.
 
 Tests both in terms of:
