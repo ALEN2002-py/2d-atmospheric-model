@@ -4,7 +4,7 @@
 
 **MSc Dissertation — Data & Computational Science**
 
-University College Dublin &nbsp;|&nbsp; ACM40910 &nbsp;|&nbsp; Supervisor: Dr Colm Clancy (Met Éireann)
+University College Dublin &nbsp;|&nbsp; ACM40910 &nbsp;|&nbsp; Supervisor: Dr Colm Clancy (UCD)
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
 ![Status](https://img.shields.io/badge/Status-Phase%204%20%E2%80%94%20Diffusion%20Comparison-yellow)
