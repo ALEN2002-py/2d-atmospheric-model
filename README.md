@@ -23,13 +23,14 @@ University College Dublin &nbsp;|&nbsp; ACM40910 &nbsp;|&nbsp; Supervisor: Dr Co
 5. [Numerical Discretisation](#5-numerical-discretisation)
 6. [Time Integration Schemes](#6-time-integration-schemes)
 7. [Stability Constraints](#7-stability-constraints)
-8. [Benchmark Test Cases](#8-benchmark-test-cases)
-9. [Convergence Results](#9-convergence-results)
-10. [Repository Structure](#10-repository-structure)
-11. [Getting Started](#11-getting-started)
-12. [Running the Experiments](#12-running-the-experiments)
-13. [Development Status](#13-development-status)
-14. [References](#14-references)
+8. [Numerical Diffusion and Filtering](#8-numerical-diffusion-and-filtering)
+9. [Benchmark Test Cases](#9-benchmark-test-cases)
+10. [Convergence Results](#10-convergence-results)
+11. [Repository Structure](#11-repository-structure)
+12. [Getting Started](#12-getting-started)
+13. [Running the Experiments](#13-running-the-experiments)
+14. [Development Status](#14-development-status)
+15. [References](#15-references)
 
 ---
 
@@ -173,7 +174,50 @@ With $c_s = 347\,\mathrm{m\,s^{-1}}$, $\Delta x = 10\,\mathrm{m}$:
 
 ---
 
-## 8. Benchmark Test Cases
+## 8. Numerical Diffusion and Filtering
+
+To suppress grid-scale (2Δx) numerical noise from centred finite differences, three
+hyperdiffusion operators and a spatial filter are implemented and compared.
+
+### Operators
+
+| Variant | Operator | RHS term |
+|---------|----------|----------|
+| ∇² | Laplacian | $+\kappa_2 \nabla^2 q$ |
+| ∇⁴ | Biharmonic | $-\kappa_4 \nabla^4 q$ |
+| ∇⁸ | Octaharmonic | $+\kappa_8 \nabla^8 q$ |
+| Shapiro | 1-2-1 separable filter | applied every ~30 s |
+
+Higher-order operators are more **scale-selective**: they damp the 2Δx wave strongly
+while leaving larger-scale features (the bubble, vortex cap) almost untouched.
+
+### κ values and timescale argument
+
+Reference values at $\Delta x = 10\,\mathrm{m}$:
+
+| Operator | κ (dx=10 m) | Units |
+|----------|-------------|-------|
+| ∇² | 1.0 | m²/s |
+| ∇⁴ | 200.0 | m⁴/s |
+| ∇⁸ | 2.0×10⁶ | m⁸/s |
+
+Values scale with grid spacing: $\kappa = \kappa_\mathrm{ref} \times (\Delta x / 10)^n$,
+then capped at the RK4 explicit stability limit.
+
+The values were chosen so the **damping timescale at the 2Δx wave** is ~50–100 s:
+
+$$\tau = \frac{1}{\kappa \left(\pi/\Delta x\right)^n}$$
+
+At $\Delta x = 10\,\mathrm{m}$ with $\kappa_2 = 1\,\mathrm{m^2\,s^{-1}}$: $\tau \approx 32\,\mathrm{s}$.
+This is fast enough to suppress noise but well below the 700 s bubble evolution time,
+so the main physical structure is unaffected.
+
+The **stability ceiling** is set by the RK4 Nyquist condition:
+$\kappa \cdot (8/\Delta x^n) \cdot \Delta t \leq 2.79$ (70% safety factor applied).
+
+---
+
+## 9. Benchmark Test Cases
 
 ### 8.1 Giraldo & Restelli (2008) Case 2 — Rising Thermal Bubble
 
@@ -198,7 +242,7 @@ where $r = \sqrt{(x-x_c)^2 + (z-z_c)^2}$.
 This case runs cleanly **without explicit diffusion or filtering**, which keeps the
 temporal error analysis clean.
 
-![G&R Case 2 — RK4 θ' field at t=700s](https://github.com/ALEN2002-py/2d-atmospheric-model/blob/main/assets/gr_case2_evolution_dx10m.png)
+![G&R Case 2 — RK4 θ' field at t=700s](assets/gr_case2_rk4.png)
 
 ### 8.2 Pudykiewicz & Clancy (2022) Experiment 1
 
@@ -216,7 +260,7 @@ resolution of the original paper.
 Note: this case requires explicit diffusion or filtering to run beyond about
 10–15 minutes of simulated time.
 
-![P&C Exp 1 - RK4](https://github.com/ALEN2002-py/2d-atmospheric-model/blob/main/assets/pc_exp1_rk4.png "Without Diffussion")
+![P&C Exp 1 — RK4 θ' field at t=900s](assets/pc_exp1_rk4.png)
 
 ### 8.3 Convergence study — Robert (1993) small-domain benchmark
 
