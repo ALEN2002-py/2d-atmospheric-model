@@ -223,14 +223,6 @@ Note: this case requires explicit diffusion or filtering to run beyond about
 | Gaussian bubble | $A = 2\,\mathrm{K}$, $r = 150\,\mathrm{m}$, centre $(500, 400)\,\mathrm{m}$ |
 | Integration time | $2\,\mathrm{s}$ (convergence) |
 
-### 8.4 Cold density current — Straka et al. (1993) *(planned)*
-
-| Parameter | Value |
-|---|---|
-| Domain | $51.2\,\mathrm{km} \times 6.4\,\mathrm{km}$ |
-| Resolution | $\Delta x = \Delta z = 50\,\mathrm{m}$ |
-| $\theta' = -15\,\mathrm{K}$ ellipse, explicit diffusion $K = 75\,\mathrm{m^2\,s^{-1}}$ | |
-
 ---
 
 ## 9. Convergence Results
