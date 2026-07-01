@@ -242,7 +242,7 @@ where $r = \sqrt{(x-x_c)^2 + (z-z_c)^2}$.
 This case runs cleanly **without explicit diffusion or filtering**, which keeps the
 temporal error analysis clean.
 
-![G&R Case 2 — RK4 θ' field at t=700s](assets/gr_case2_rk4.png)
+![G&R Case 2 — RK4 θ' field at t=700s](assets/gr_case2_evolution_dx10m.png)
 
 ### 8.2 Pudykiewicz & Clancy (2022) Experiment 1
 
