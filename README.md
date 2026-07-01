@@ -198,6 +198,8 @@ where $r = \sqrt{(x-x_c)^2 + (z-z_c)^2}$.
 This case runs cleanly **without explicit diffusion or filtering**, which keeps the
 temporal error analysis clean.
 
+![Alt text]](https://github.com/ALEN2002-py/2d-atmospheric-model/blob/main/assets/gr_case2_evolution_dx10m.png)
+
 ### 8.2 Pudykiewicz & Clancy (2022) Experiment 1
 
 A wider domain with a larger bubble, used to test the EPI schemes at the
