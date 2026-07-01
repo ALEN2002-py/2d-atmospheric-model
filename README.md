@@ -216,6 +216,8 @@ resolution of the original paper.
 Note: this case requires explicit diffusion or filtering to run beyond about
 10–15 minutes of simulated time.
 
+![P&C Exp 1 - RK4](https://github.com/ALEN2002-py/2d-atmospheric-model/blob/main/assets/pc_exp1_rk4.png "Without Diffussion")
+
 ### 8.3 Convergence study — Robert (1993) small-domain benchmark
 
 | Parameter | Value |
