@@ -87,9 +87,9 @@ CFL = 0.34    # max acoustic CFL for RK4 stability
 # ---------------------------------------------------------------------------
 # Damping timescale at 2*dx wave: tau = 1 / (kappa * k_max^order)
 # k_max = pi/dx.  Values chosen so tau ~ 50-100 s at dx=10 m.
-KAPPA2_REF = 1.0      # m^2/s
-KAPPA4_REF = 200.0    # m^4/s
-KAPPA8_REF = 2.0e6    # m^8/s   (conservative: well within RK4 stability)
+KAPPA2_REF = 0.3      # m^2/s  (reduced 3x from 1.0 — sweet spot between noise and over-damping)
+KAPPA4_REF = 60.0     # m^4/s  (reduced 3x from 200.0)
+KAPPA8_REF = 6.0e5    # m^8/s  (reduced 3x from 2.0e6)
 
 def _kappa(order, dx, dt):
     """Scale kappa to dx, capped at the RK4 explicit stability limit.
@@ -153,7 +153,11 @@ def run_variant(label, dx, dt, grid_params, snap_times=SNAP_T, shapiro_period=30
     target_steps = {}
     for ts in snap_times:
         if ts == 0:
-            snaps[0] = state["theta"].copy()
+            snaps[0] = {
+                "theta": state["theta"].copy(),
+                "u":     state["u"].copy(),
+                "w":     state["w"].copy(),
+            }
         else:
             idx = int(round(ts / dt_exact))
             idx = min(idx, nstep_total)
@@ -167,7 +171,11 @@ def run_variant(label, dx, dt, grid_params, snap_times=SNAP_T, shapiro_period=30
             state = shapiro_filter(state, grid)
         t_sim = (n + 1) * dt_exact
         if (n + 1) in target_steps:
-            snaps[target_steps[n + 1]] = state["theta"].copy()
+            snaps[target_steps[n + 1]] = {
+                    "theta": state["theta"].copy(),
+                    "u":     state["u"].copy(),
+                    "w":     state["w"].copy(),
+                }
 
     elapsed = wall_time.perf_counter() - t0
     th = state["theta"]
@@ -235,7 +243,6 @@ def plot_evolution_grid(all_snaps, variant_labels, dx, out_path):
     for row, (snaps, label) in enumerate(zip(all_snaps, variant_labels)):
         for col, ts in enumerate(SNAP_T):
             ax  = axes[row][col]
-            th  = snaps.get(ts)
 
             # Clean frame
             ax.set_facecolor("#0a1628")
@@ -244,6 +251,11 @@ def plot_evolution_grid(all_snaps, variant_labels, dx, out_path):
                 spine.set_linewidth(0.5)
             ax.tick_params(left=False, bottom=False,
                            labelleft=False, labelbottom=False)
+
+            snap = snaps.get(ts)
+            th   = snap["theta"] if snap is not None else None
+            u_f  = snap["u"]     if snap is not None else None
+            w_f  = snap["w"]     if snap is not None else None
 
             if th is not None:
                 # Smooth for display only (never touches simulation state)
@@ -263,6 +275,16 @@ def plot_evolution_grid(all_snaps, variant_labels, dx, out_path):
                 X, Z = np.meshgrid(x_km, z_km)
                 ax.contour(X, Z, disp, levels=CLEV,
                            colors="white", linewidths=0.35, alpha=0.55)
+
+                # Velocity quiver — subsample every ~80 m
+                skip = max(1, int(round(80.0 / dx)))
+                ax.quiver(
+                    X[::skip, ::skip], Z[::skip, ::skip],
+                    u_f[::skip, ::skip], w_f[::skip, ::skip],
+                    color="white", alpha=0.55,
+                    scale=35, width=0.004,
+                    headwidth=3, headlength=4,
+                )
 
             ax.set_xlim(0, LX / 1000)
             ax.set_ylim(0, LZ / 1000)
@@ -323,6 +345,136 @@ def plot_evolution_grid(all_snaps, variant_labels, dx, out_path):
                 facecolor="white", edgecolor="none")
     plt.close(fig)
     print(f"\n  Saved: {out_path}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Final snapshot figure — all variants at t = 700 s  (2 × 3 grid)
+# ---------------------------------------------------------------------------
+def plot_final_snapshot(all_snaps, variant_labels, dx, out_path):
+    """
+    2-row × 3-column figure showing θ' + velocity quiver for every variant
+    at t = T_END only.  Larger panels than the evolution grid so the
+    mushroom-cap structure is clearly visible.
+    """
+    try:
+        from scipy.ndimage import gaussian_filter
+        SMOOTH = True
+    except ImportError:
+        SMOOTH = False
+
+    n_vars  = len(all_snaps)          # 6
+    n_cols  = 3
+    n_rows  = (n_vars + n_cols - 1) // n_cols   # 2
+
+    CELL    = 3.6     # inches per panel (square domain → square panel)
+    PAD_L   = 0.55
+    PAD_R   = 0.80    # room for colorbar
+    PAD_T   = 0.55
+    PAD_B   = 0.45
+
+    fig_w = PAD_L + n_cols * CELL + PAD_R
+    fig_h = PAD_T + n_rows * CELL + PAD_B
+
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(fig_w, fig_h),
+                             sharex=True, sharey=True)
+
+    plt.subplots_adjust(
+        left   = PAD_L / fig_w,
+        right  = (PAD_L + n_cols * CELL) / fig_w,
+        top    = 1.0 - PAD_T / fig_h,
+        bottom = PAD_B / fig_h,
+        hspace = 0.08,
+        wspace = 0.06,
+    )
+
+    cmap       = "RdYlBu_r"
+    vmin, vmax = CLEV[0], CLEV[-1]
+    extent     = [0, LX / 1000, 0, LZ / 1000]
+
+    for idx, (snaps, label) in enumerate(zip(all_snaps, variant_labels)):
+        row = idx // n_cols
+        col = idx  % n_cols
+        ax  = axes[row][col]
+
+        ax.set_facecolor("#0a1628")
+        for spine in ax.spines.values():
+            spine.set_edgecolor("#334")
+            spine.set_linewidth(0.6)
+
+        snap = snaps.get(T_END)
+        if snap is None:
+            snap = snaps[max(snaps.keys())]
+        th  = snap["theta"] if isinstance(snap, dict) else snap
+        u_f = snap["u"]     if isinstance(snap, dict) else None
+        w_f = snap["w"]     if isinstance(snap, dict) else None
+
+        disp = gaussian_filter(th, sigma=0.9) if SMOOTH else th
+
+        ax.imshow(disp, origin="lower", extent=extent,
+                  aspect="auto", cmap=cmap,
+                  vmin=vmin, vmax=vmax,
+                  interpolation="bicubic")
+
+        x_km = np.linspace(0, LX / 1000, th.shape[1])
+        z_km = np.linspace(0, LZ / 1000, th.shape[0])
+        X, Z = np.meshgrid(x_km, z_km)
+        ax.contour(X, Z, disp, levels=CLEV,
+                   colors="white", linewidths=0.4, alpha=0.55)
+
+        # Velocity quiver
+        if u_f is not None and w_f is not None:
+            skip = max(1, int(round(80.0 / dx)))
+            ax.quiver(X[::skip, ::skip], Z[::skip, ::skip],
+                      u_f[::skip, ::skip], w_f[::skip, ::skip],
+                      color="white", alpha=0.6,
+                      scale=35, width=0.004,
+                      headwidth=3, headlength=4)
+
+        ax.set_xlim(0, LX / 1000)
+        ax.set_ylim(0, LZ / 1000)
+
+        # Axis labels
+        if row == n_rows - 1:
+            ax.tick_params(labelbottom=True)
+            ax.xaxis.set_major_locator(plt.MultipleLocator(0.5))
+            ax.tick_params(axis="x", labelsize=8)
+            ax.set_xlabel("x [km]", fontsize=9, labelpad=3)
+        if col == 0:
+            ax.tick_params(labelleft=True)
+            ax.yaxis.set_major_locator(plt.MultipleLocator(0.5))
+            ax.tick_params(axis="y", labelsize=8)
+            ax.set_ylabel("z [km]", fontsize=9, labelpad=3)
+
+        # Panel title
+        ax.set_title(label, fontsize=9.5, fontweight="bold",
+                     color="#111", pad=5)
+
+    # Colorbar
+    cbar_left   = (PAD_L + n_cols * CELL + 0.12) / fig_w
+    cbar_bottom = PAD_B / fig_h + 0.04
+    cbar_width  = 0.22 / fig_w
+    cbar_height = 1.0 - (PAD_T + PAD_B) / fig_h - 0.06
+
+    sm = plt.cm.ScalarMappable(cmap=cmap,
+         norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    cbar_ax = fig.add_axes([cbar_left, cbar_bottom, cbar_width, cbar_height])
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_label(r"$\theta'$ [K]", fontsize=11, labelpad=6)
+    cbar.ax.tick_params(labelsize=9)
+    cbar.outline.set_linewidth(0.5)
+
+    fig.suptitle(
+        f"G&R Case 2 — Rising Thermal Bubble at t = {int(T_END)} s   (dx = {dx} m)",
+        fontsize=12, fontweight="bold", color="#111",
+        y=1.0 - 0.10 / fig_h,
+    )
+
+    plt.savefig(out_path, dpi=160, bbox_inches="tight",
+                facecolor="white", edgecolor="none")
+    plt.close(fig)
+    print(f"  Saved: {out_path}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -399,31 +551,32 @@ def plot_vertical_profile(all_snaps, variant_labels, dx, out_path):
     x_centres = (np.arange(nx) + 0.5) * dx
     ix = int(np.argmin(np.abs(x_centres - X_C)))
 
-    fig, ax = plt.subplots(figsize=(6.5, 4.2))
+    fig, ax = plt.subplots(figsize=(7.5, 5.5))
 
     for i, (snaps, label, style) in enumerate(zip(all_snaps, variant_labels, STYLES)):
-        th = snaps.get(T_END)
-        if th is None:
-            th = snaps[max(snaps.keys())]
+        snap = snaps.get(T_END)
+        if snap is None:
+            snap = snaps[max(snaps.keys())]
+        th = snap["theta"] if isinstance(snap, dict) else snap
         profile = th[:, ix]   # shape (nz,)
-        ax.plot(z_km, profile, label=label,
+        ax.plot(profile, z_km, label=label,
                 color=style["color"], lw=style["lw"],
                 ls=style["ls"], zorder=style["zorder"])
 
-    ax.set_xlabel("z [km]", fontsize=12)
-    ax.set_ylabel(r"$\theta'$ [K]", fontsize=12)
+    ax.set_xlabel(r"$\theta'$ [K]", fontsize=12)
+    ax.set_ylabel("z [km]", fontsize=12)
     ax.set_title(
         f"Vertical profile of $\\theta'$ at $x = 500$ m,  $t = {int(T_END)}$ s\n"
         f"G&R Case 2  (dx = {dx} m)",
         fontsize=11,
     )
-    ax.set_xlim(0, LZ / 1000)
-    ax.set_ylim(bottom=-0.02)
-    ax.xaxis.set_major_locator(plt.MultipleLocator(0.2))
-    ax.yaxis.set_major_locator(plt.MultipleLocator(0.1))
+    ax.set_xlim(-0.02, 0.70)          # theta' on x-axis — extended right
+    ax.set_ylim(0.45, 1.02)           # zoom into region where bubble actually is
+    ax.xaxis.set_major_locator(plt.MultipleLocator(0.1))
+    ax.yaxis.set_major_locator(plt.MultipleLocator(0.05))
     ax.grid(axis="x", color="#ddd", lw=0.6, zorder=0)
     ax.grid(axis="y", color="#ddd", lw=0.6, zorder=0)
-    ax.legend(fontsize=9, loc="upper left", framealpha=0.9,
+    ax.legend(fontsize=9, loc="lower right", framealpha=0.9,
               edgecolor="#ccc", handlelength=2.8)
 
     fig.tight_layout()
@@ -431,6 +584,18 @@ def plot_vertical_profile(all_snaps, variant_labels, dx, out_path):
                 facecolor="white", edgecolor="none")
     plt.close(fig)
     print(f"  Saved: {out_path}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Multiprocessing worker (must be at module level for pickling on Windows)
+# ---------------------------------------------------------------------------
+def _worker(args):
+    """Unpack and run one variant — used by multiprocessing.Pool."""
+    label, dx, vdt, gp, snap_times, sp = args
+    snaps, stats = run_variant(label, dx, vdt, dict(gp),
+                               snap_times=snap_times, shapiro_period=sp)
+    stats["dt"] = vdt
+    return label, snaps, stats
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +609,10 @@ def main():
     parser.add_argument("--shapiro-period", type=float, default=30.0,
                         help="Shapiro filter interval in simulation seconds "
                              "(default 30; use 0 for every step)")
+    parser.add_argument("--parallel", action="store_true",
+                        help="Run variants in parallel using multiprocessing")
+    parser.add_argument("--no-ref", action="store_true",
+                        help="Skip IDEAL tiny-dt reference (saves ~50%% of run time)")
     args = parser.parse_args()
 
     dx = args.dx
@@ -459,33 +628,36 @@ def main():
     print(f"  G&R Case 2 diffusion comparison")
     print(f"  dx={dx} m   dt={dt:.4f} s   dt_tiny={dt_tiny:.5f} s")
     print(f"  kappa2={k2:.2f}  kappa4={k4:.1f}  kappa8={k8:.2e}")
+    print(f"  parallel={'yes' if args.parallel else 'no'}")
+    print(f"  no-ref={'yes' if args.no_ref else 'no'}")
     print(f"{'='*65}\n")
 
     variants = [
-        ("IDEAL  (no diffusion)",
-         dt,  {}),
-        (f"nabla2  (k2={k2:.2g} m2/s)",
-         dt,  {"diffusion_coeff": k2, "diffusion_order": 2}),
-        (f"nabla4  (k4={k4:.2g} m4/s)",
-         dt,  {"diffusion_coeff": k4, "diffusion_order": 4}),
-        (f"nabla8  (k8={k8:.2e} m8/s)",
-         dt,  {"diffusion_coeff": k8, "diffusion_order": 8}),
-        (f"Shapiro (every {sp if sp else 'step'} s)",
-         dt,  {"_shapiro": True}),
-        ("IDEAL tiny dt (ref)",
-         dt_tiny, {}),
+        ("IDEAL  (no diffusion)",          dt,      {}),
+        (f"nabla2  (k2={k2:.2g} m2/s)",   dt,      {"diffusion_coeff": k2, "diffusion_order": 2}),
+        (f"nabla4  (k4={k4:.2g} m4/s)",   dt,      {"diffusion_coeff": k4, "diffusion_order": 4}),
+        (f"nabla8  (k8={k8:.2e} m8/s)",   dt,      {"diffusion_coeff": k8, "diffusion_order": 8}),
+        (f"Shapiro (every {sp if sp else 'step'} s)", dt, {"_shapiro": True}),
     ]
+    if not args.no_ref:
+        variants.append(("IDEAL tiny dt (ref)", dt_tiny, {}))
 
-    all_snaps = []
-    all_stats = []
-    labels    = []
-    for label, vdt, gp in variants:
-        print(f"Running: {label}", flush=True)
-        snaps, stats = run_variant(label, dx, vdt, dict(gp), shapiro_period=sp)
-        stats["dt"] = vdt
-        all_snaps.append(snaps)
-        all_stats.append(stats)
-        labels.append(label)
+    worker_args = [(label, dx, vdt, dict(gp), SNAP_T, sp)
+                   for label, vdt, gp in variants]
+
+    if args.parallel:
+        import multiprocessing
+        n_cores = min(len(variants), multiprocessing.cpu_count())
+        print(f"  Spawning {n_cores} workers ...\n", flush=True)
+        with multiprocessing.Pool(processes=n_cores) as pool:
+            results = pool.map(_worker, worker_args)
+    else:
+        results = [_worker(a) for a in worker_args]
+
+    labels, all_snaps, all_stats = zip(*results)
+    labels    = list(labels)
+    all_snaps = list(all_snaps)
+    all_stats = list(all_stats)
 
     out_evo = os.path.join(OUT_DIR, f"diffcomp_gr_dx{int(dx)}m.png")
     plot_evolution_grid(all_snaps, labels, dx, out_evo)
@@ -493,6 +665,9 @@ def main():
 
     out_vp = os.path.join(OUT_DIR, f"diffcomp_gr_vprofile_dx{int(dx)}m.png")
     plot_vertical_profile(all_snaps, labels, dx, out_vp)
+
+    out_fs = os.path.join(OUT_DIR, f"diffcomp_gr_final_dx{int(dx)}m.png")
+    plot_final_snapshot(all_snaps, labels, dx, out_fs)
 
 
 if __name__ == "__main__":

@@ -64,9 +64,14 @@ DEFAULTS = {
     # Higher order damps only the shortest waves, preserving the bubble.
     "diffusion_order": 2,
 
-    # Sponge layer
+    # Sponge layer -- OFF by default. Neither G&R (2008) nor P&C (2022) Case/Exp
+    # setups specify an absorbing sponge (G&R: "no-flux on all four walls").
+    # Enabling this changes results: on G&R's short 1000m domain the mushroom
+    # cap rises directly into the top-20% sponge zone by t=700s, damping
+    # theta_max/w_max by ~10% versus the documented no-sponge reference values.
+    # Pass {"sponge_strength": 0.01} explicitly if a run actually needs one.
     "sponge_fraction": 0.20,
-    "sponge_strength": 0.01,   # s^-1
+    "sponge_strength": 0.0,   # s^-1
 }
 
 

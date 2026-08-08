@@ -34,7 +34,7 @@ Usage
 -----
     cd 2d-atmospheric-model
     python experiments/pc_exp1_benchmark.py --scheme RK4 --dx 40 --t_end 1200
-    python experiments/pc_exp1_benchmark.py --scheme EPI3FJ --dx 40 --t_end 600
+    python experiments/pc_exp1_benchmark.py --scheme EPI3 --dx 40 --t_end 600
 """
 
 import argparse
@@ -70,7 +70,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 
 from grid        import Grid
-from integrators import step, shapiro_filter
+from integrators import step, shapiro_filter, robert_asselin_filter_time
 
 OUT_DIR = "output/figures"
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -149,13 +149,20 @@ def run(scheme="RK4", dx=40.0, dt=None, t_end=None, shapiro=True, kappa=0.0):
     if t_end is None:
         t_end = PAPER["t_end"]
 
-    is_epi     = scheme in ("EPI2", "EPI3", "EPI2FJ", "EPI3FJ")
+    is_epi      = scheme in ("EPI2", "EPI3")
+    is_si       = scheme in ("SI", "SI2")   # any semi-implicit variant
+    is_si2      = scheme == "SI2"           # leapfrog variant (needs Robert-Asselin)
     is_explicit = scheme in ("RK4", "FTCS")
 
     if dt is None:
         if is_explicit:
             c_s = np.sqrt((1004.0 / 717.0) * 287.0 * _tbar)
             dt  = 0.9 * dx / c_s
+        elif is_si:
+            # SI/SI2 removes acoustic CFL constraint.
+            # dt=5s → advective CFL = |w|*5/20 ≈ 0.25 at |w|~1 m/s initially.
+            # Use Shapiro filter to prevent 2Δx blow-up at later times.
+            dt = 5.0
         else:
             dt = PAPER["dt_EPI"]
 
@@ -174,13 +181,38 @@ def run(scheme="RK4", dx=40.0, dt=None, t_end=None, shapiro=True, kappa=0.0):
     print("  Grid   : {}x{}  (dx=dz={:.0f} m)".format(grid.nx, grid.nz, dx))
     print("  dt     : {} s   acoustic CFL = {:.1f}".format(dt, cfl_ac))
     print("  Steps  : {}   t_end = {:.0f} s".format(n_steps, t_end))
-    print("  Filter : Shapiro {}".format("ON (every 2 steps)" if shapiro else "OFF"))
+    filter_applies = shapiro and (is_epi or is_si)
+    print("  Filter : Shapiro {}".format("ON" if filter_applies else "OFF"))
+    if is_si and not is_si2:
+        c_adv = W_SCALE * dt / dx
+        print("  SI     : implicit L, explicit N(q^n)  [1st order]")
+        print("           advective CFL est. = {:.2f}  (at |v|~{:.1f} m/s)".format(
+            c_adv, W_SCALE))
+    elif is_si2:
+        c_adv = W_SCALE * dt / dx
+        print("  SI2    : leapfrog CN  [2nd order; Robert-Asselin filter, alpha=0.1]")
+        print("           advective CFL est. = {:.2f}  (at |v|~{:.1f} m/s)".format(
+            c_adv, W_SCALE))
     if kappa > 0:
         print("  Diffusion: kappa = {:.1f} m^2/s  (tau_2dx={:.0f}s, tau_bubble={:.0f}s)".format(
             kappa, (2*dx)**2/kappa, PAPER["a"]**2/kappa))
     print("  T_buoy ~ {:.0f} s   ({:.1f} x T)".format(T_BUOY, t_end/T_BUOY))
     print("  W_scale ~ {:.2f} m/s".format(W_SCALE))
     print("="*65)
+
+    # Shapiro filter interval:
+    # EPI (P&C standard): every 2 steps at dt=15s → 30s physical period.
+    # SI: match same 30s period → every ceil(30/dt) steps.
+    if is_si or is_epi:
+        # Target ~30s physical period (matches P&C at dt=15s → every 2 steps)
+        shapiro_interval = max(2, int(round(30.0 / dt)))
+    else:
+        shapiro_interval = 2
+
+    filter_applies = shapiro and (is_epi or is_si)
+    if filter_applies:
+        print("  Shapiro: every {} steps = every {:.0f} s".format(
+            shapiro_interval, shapiro_interval * dt))
 
     snap_set = set(t for t in SNAP_TIMES if t <= t_end)
     snap_set.add(t_end)
@@ -194,6 +226,9 @@ def run(scheme="RK4", dx=40.0, dt=None, t_end=None, shapiro=True, kappa=0.0):
     snapshots.append((0.0, {k: v.copy() for k, v in state.items()}))
 
     for n in range(n_steps):
+        # Save q^{n-1} before step() overwrites state_old with q^n (SI2 only)
+        q_nm1 = state_old if is_si2 else None
+
         try:
             state_new, state_old, epi_extra = step(
                 state, grid, dt,
@@ -205,16 +240,19 @@ def run(scheme="RK4", dx=40.0, dt=None, t_end=None, shapiro=True, kappa=0.0):
             print("\n  Exception at step {} (t={:.1f}s): {}".format(n+1, t, exc))
             break
 
+        # Robert-Asselin time filter for SI2 (suppress computational mode)
+        if is_si2 and q_nm1 is not None:
+            state_old = robert_asselin_filter_time(q_nm1, state_old, state_new)
+
         state = state_new
 
         if is_epi and epi_extra is not None:
-            if scheme in ("EPI2FJ", "EPI3FJ"):
-                epi_n_prev = epi_extra
-            else:
-                epi_n_prev = epi_extra["n_rhs"]
+            epi_n_prev = epi_extra["n_rhs"]
 
-        # Shapiro filter: every 2 steps for EPI only (as in paper)
-        if shapiro and is_epi and (n + 1) % 2 == 0:
+        # Shapiro filter: P&C (2022) eq 5.6-5.7, every shapiro_interval steps.
+        # EPI: every 2 steps (P&C standard at dt=15s → 30s period).
+        # SI:  every ceil(30/dt) steps (same 30s physical period).
+        if filter_applies and (n + 1) % shapiro_interval == 0:
             state = shapiro_filter(state, grid)
 
         t += dt
@@ -388,7 +426,7 @@ if __name__ == "__main__":
         description="P&C (2022) Experiment 1: Convective Bubble benchmark"
     )
     parser.add_argument("--scheme", default="RK4",
-                        choices=["EPI3", "EPI2", "EPI3FJ", "EPI2FJ", "RK4", "SI"],
+                        choices=["EPI3", "EPI2", "RK4", "SI", "SI2"],
                         help="Time integration scheme")
     parser.add_argument("--dx",    type=float, default=40.0,
                         help="Grid spacing in m (default: 40; paper uses 20)")

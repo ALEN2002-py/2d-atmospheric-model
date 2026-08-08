@@ -195,56 +195,27 @@ def compute_hyperdiffusion_rhs(state, grid, order=2, coeff=None):
     return out
 
 
-def compute_diffusion_rhs(state, grid):
-    """
-    Explicit diffusion  κ ∇²q  for all prognostic variables.
-    κ = grid.diffusion_coeff  [m²/s]
-
-    G&R (2008) use κ ≈ 75 m²/s to smooth grid-scale noise.
-    Stability limit (explicit):  dt ≤ dx² / (4κ)
-      → at dx=10 m, κ=75:  dt_max ≈ 0.33 s  (RK4 at dt=0.01 s is well within this)
-
-    Finite-difference Laplacian:
-      x: periodic  (np.roll)
-      z: zero-Neumann (no-flux) at top and bottom
-    """
-    kappa = grid.diffusion_coeff
-    dx    = grid.dx
-    dz    = grid.dz
-    out   = {}
-
-    for key in ('u', 'w', 'theta', 'pi'):
-        f = state[key]
-
-        # ∂²f/∂x² — periodic BCs
-        d2x = (np.roll(f, -1, axis=1) - 2.0*f + np.roll(f, 1, axis=1)) / dx**2
-
-        # ∂²f/∂z² — zero-Neumann BCs (ghost point = boundary value)
-        d2z          = np.empty_like(f)
-        d2z[1:-1, :] = (f[2:, :]  - 2.0*f[1:-1, :] + f[:-2, :]) / dz**2
-        d2z[0,    :] = (f[1,  :]  - f[0,  :])                    / dz**2
-        d2z[-1,   :] = (f[-2, :]  - f[-1, :])                    / dz**2
-
-        out[key] = kappa * (d2x + d2z)
-
-    # Enforce solid-wall BC: no diffusive flux of w at top/bottom
-    out['w'][0,  :] = 0.0
-    out['w'][-1, :] = 0.0
-
-    return out
-
-
 def compute_linear_rhs(state, grid):
     """
     Linear stiff part L*q.
-    Contains acoustic pressure gradient, buoyancy, base-state gradient.
+    Contains acoustic pressure gradient, buoyancy, base-state gradient,
+    and Rayleigh sponge damping.
     Used by SI (implicitly) and EPI (matrix exponential).
 
     Linear terms:
-      u:  -cp * theta_bar * dpi'/dx
-      w:  -cp * theta_bar * dpi'/dz  +  g * theta' / theta_bar
-      pi: -(R/cv) * pi_bar * (du/dx + dw/dz)  +  gw/(cp*theta_bar)
-      th: -w * dtheta_bar/dz
+      u:  -cp * theta_bar * dpi'/dx                        - alpha(z)*u
+      w:  -cp * theta_bar * dpi'/dz  +  g * theta' / theta_bar - alpha(z)*w
+      pi: -(R/cv) * pi_bar * (du/dx + dw/dz)  +  gw/(cp*theta_bar) - alpha(z)*pi'
+      th: -w * dtheta_bar/dz                                - alpha(z)*theta'
+
+    Sponge (Rayleigh damping, grid.sponge = alpha(z)) is deliberately placed
+    in the LINEAR part rather than added as an explicit correction: it is a
+    real (non-oscillatory) decay term, exactly the kind that is
+    unconditionally unstable if folded into a leapfrog scheme's explicit N
+    term (see integrators._apply_diffusion_correction's docstring for the
+    same issue with hyperdiffusion). Living inside L instead means SI/SI2
+    damp it via the implicit GMRES solve (unconditionally stable) and EPI
+    captures it exactly via exp(L*dt) -- no special-casing needed anywhere.
     """
     u     = state["u"]
     w     = state["w"]
@@ -261,16 +232,17 @@ def compute_linear_rhs(state, grid):
     tb   = grid.theta_bar[:,    np.newaxis]   # (nz,1)
     pb   = grid.pi_bar[:,       np.newaxis]   # (nz,1)
     dtdz = grid.dtheta_bar_dz[:, np.newaxis]  # (nz,1)
+    alpha = grid.sponge[:,       np.newaxis]  # (nz,1) -- 0 except top sponge_fraction
 
     dpi_dx = _dx(pi, dx)
     dpi_dz = _dz(pi, dz)
     du_dx  = _dx(u,  dx)
     dw_dz  = _dz(w,  dz)
 
-    rhs_u  = -cp * tb * dpi_dx
-    rhs_w  = -cp * tb * dpi_dz + g * theta / tb
-    rhs_pi = -(grid.Rd / cv) * pb * (du_dx + dw_dz) + g * w / (cp * tb)
-    rhs_th = -w * dtdz
+    rhs_u  = -cp * tb * dpi_dx                              - alpha * u
+    rhs_w  = -cp * tb * dpi_dz + g * theta / tb              - alpha * w
+    rhs_pi = -(grid.Rd / cv) * pb * (du_dx + dw_dz) + g * w / (cp * tb) - alpha * pi
+    rhs_th = -w * dtdz                                       - alpha * theta
 
     # Boundary conditions
     rhs_w[0,  :] = 0.0

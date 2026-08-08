@@ -91,8 +91,8 @@ import matplotlib
 matplotlib.use("Agg")   # non-interactive backend (no display window); needed for HPC/headless
 import matplotlib.pyplot as plt
 
-from grid        import Grid   # the Grid class (unstaggered 2D grid + base state)
-from integrators import step   # the main time-stepping dispatcher
+from grid        import Grid             # the Grid class (unstaggered 2D grid + base state)
+from integrators import step, shapiro_filter, robert_asselin_filter_time  # time-stepping
 
 # ---------------------------------------------------------------------------
 # Output directory
@@ -180,18 +180,19 @@ def make_state(grid):
 # TIME INTEGRATION LOOP
 # ===========================================================================
 
-def run(dx=10, dt=None, t_end=700.0):
+def run(dx=10, dt=None, t_end=700.0, scheme="RK4", shapiro=False, kappa=0.0):
     """
-    Run G&R Case 2 with the RK4 scheme. Saves snapshots at SNAP_TIMES.
+    Run G&R Case 2. Saves snapshots at SNAP_TIMES.
 
     Parameters
     ----------
-    dx    : float  — grid spacing in metres (dx = dz, unstaggered grid)
-                     default 3.5 m (paper resolution); use 10 m for fast runs
-    dt    : float  — time step in seconds
-                     default None -> auto-compute as dt = 0.01 * (dx/10)
-                     This keeps the acoustic CFL = c_s*dt/dx ≈ 0.35 regardless of dx.
-    t_end : float  — simulation end time in seconds (default 700 s)
+    dx      : float  — grid spacing in metres (dx = dz, unstaggered grid)
+    dt      : float  — time step in seconds (None → auto-computed per scheme)
+    t_end   : float  — simulation end time in seconds (default 700 s)
+    scheme  : str    — time integration scheme: 'RK4', 'SI', 'EPI2', 'EPI3', etc.
+    kappa   : float  — explicit biharmonic diffusion coefficient ν₄ [m⁴/s] (default 0 = no diffusion)
+                       Use 1-5 m²/s for mild noise control; 75 m²/s is density-current only
+    shapiro : bool   — apply Shapiro (1-2-1) filter every 2 steps for SI/EPI schemes
 
     Returns
     -------
@@ -201,21 +202,52 @@ def run(dx=10, dt=None, t_end=700.0):
     """
 
     # -----------------------------------------------------------------------
-    # Auto-compute timestep if not given
+    # Scheme classification
     # -----------------------------------------------------------------------
-    # We want the acoustic CFL number = c_s * dt / dx ≈ 0.35 (stable for RK4).
-    # c_s ≈ 347 m/s (speed of sound in air at 300 K).
-    # At dx=10 m: dt = 0.01 * (10/10) = 0.01 s → CFL = 347*0.01/10 = 0.347.
-    # At dx=5  m: dt = 0.01 * (5/10)  = 0.005 s → CFL = 347*0.005/5 = 0.347 (same CFL).
+    is_explicit = scheme in ("RK4", "FTCS", "BTCS", "CTCS")
+    is_si       = scheme in ("SI", "SI2", "SI2LU")   # any semi-implicit variant
+    is_si2      = scheme in ("SI2", "SI2LU")  # leapfrog variant (GMRES or direct-LU)
+    is_epi      = scheme in ("EPI2", "EPI3")
+
+    # -----------------------------------------------------------------------
+    # Auto-compute timestep per scheme
+    # -----------------------------------------------------------------------
+    # RK4 (and other explicit): must satisfy acoustic CFL < 1.
+    #   c_s ≈ 347 m/s → dt = 0.01*(dx/10) keeps CFL ≈ 0.35.
+    # SI: removes acoustic CFL constraint. At dx=10m, dt=1s gives
+    #   advective CFL = |w|*dt/dx ≈ 2.5*1/10 = 0.25 (stable for explicit N).
+    # EPI: acoustic CFL is handled by Krylov sub-steps. Constraint is advective:
+    #   CFL_adv = |w|_max * dt / dx < 1  for explicit N stability.
+    #   At dx=10m, reference |w|~2.5 m/s → dt=1s gives CFL_adv=0.25.
+    #   WARNING: dt=2s gives threshold |w|=5 m/s which is exceeded when the
+    #   bubble over-accelerates (L-N decoupling) → blow-up at t~350s.
     if dt is None:
-        dt = 0.01 * (dx / 10.0)
+        if is_explicit:
+            dt = 0.01 * (dx / 10.0)   # acoustic CFL ≈ 0.35 (stable for RK4)
+        elif is_si:
+            dt = 1.0                   # SI/SI2: advective CFL ≈ 0.25 at |w|~2.5m/s
+        else:                          # EPI variants
+            dt = 1.0                   # EPI: CFL_adv=0.25; threshold |w|=10m/s
+
+    # Shapiro filter interval (compute here so header can show it)
+    # P&C (2022): every 2 EPI steps at dt=15s → 30s physical period.
+    # Generalise: target ~30s physical period for both EPI and SI.
+    #   dt=1s  → every 30 steps = 30s
+    #   dt=2s  → every 15 steps = 30s
+    #   dt=5s  → every  6 steps = 30s
+    #   dt=15s → every  2 steps = 30s  (matches P&C exactly)
+    if is_si or is_epi:
+        shapiro_interval = max(2, int(round(30.0 / dt)))
+    else:
+        shapiro_interval = 2
 
     # -----------------------------------------------------------------------
     # Build the grid and initial state
     # -----------------------------------------------------------------------
     # Grid uses default isentropic base state: theta_bar = 300 K, dtheta_bar/dz = 0.
-    # No diffusion (kappa = 0) — the G&R paper uses no explicit viscosity for the bubble.
-    grid  = Grid({"Lx": PAPER["Lx"], "Lz": PAPER["Lz"], "dx": dx, "dz": dx})
+    # Grid: pass diffusion coefficient if set (default 0 = inviscid, as in G&R paper)
+    grid  = Grid({"Lx": PAPER["Lx"], "Lz": PAPER["Lz"], "dx": dx, "dz": dx,
+                  "diffusion_coeff": kappa})
     state = make_state(grid)
 
     # -----------------------------------------------------------------------
@@ -233,9 +265,28 @@ def run(dx=10, dt=None, t_end=700.0):
     print("")
     print("=" * 60)
     print("  G&R (2008) Case 2 - Rising Thermal Bubble")
+    filter_desc = ""
+    if shapiro and (is_si or is_epi):
+        filter_desc = "  +Shapiro filter (every {} steps = every {:.0f} s)".format(
+            shapiro_interval, shapiro_interval * dt)
+    print("  Scheme : {}{}".format(scheme, filter_desc))
     print("  Grid : {}x{}  (dx=dz={:.0f} m)".format(grid.nx, grid.nz, dx))
     print("  dt   : {} s   acoustic CFL = {:.2f}".format(dt, cfl_ac))
+    if is_si and not is_si2:
+        c_adv = 2.5 * dt / dx
+        print("  SI   : implicit L, explicit N(q^n)  [1st order]")
+        print("         advective CFL est. = {:.2f}  (at |w|~2.5 m/s)".format(c_adv))
+    elif is_si2:
+        c_adv = 2.5 * dt / dx
+        print("  SI2  : leapfrog CN  [2nd order; Robert-Asselin filter, alpha=0.1]")
+        print("         advective CFL est. = {:.2f}  (at |w|~2.5 m/s)".format(c_adv))
     print("  Steps: {}   t_end = {:.0f} s".format(n_steps, t_end))
+    if kappa > 0:
+        # ∇⁴ damping timescale: τ = L⁴ / (2 * ν₄ * (2π)⁴) approx L⁴/(16 ν₄) for discrete
+        tau_2dx    = (2 * dx)**4 / (16.0 * kappa)   # 2Δx mode
+        tau_bubble = PAPER["r_c"]**4 / (16.0 * kappa)  # bubble scale
+        print("  Diffusion (∇⁴): nu4={:.0f} m⁴/s  tau_2dx={:.1f}s  tau_bubble={:.0f}s".format(
+              kappa, tau_2dx, tau_bubble))
     print("  Snapshots at: {} s".format(SNAP_TIMES))
     print("=" * 60)
 
@@ -255,24 +306,47 @@ def run(dx=10, dt=None, t_end=700.0):
     # -----------------------------------------------------------------------
     # Time integration loop
     # -----------------------------------------------------------------------
-    t0_wall   = wall_time.perf_counter()  # real-world start time for measuring wall time
-    t         = 0.0                        # current simulation time [s]
-    state_old = None                       # previous state (used by CTCS leapfrog; None for RK4)
+    t0_wall    = wall_time.perf_counter()  # real-world start time for measuring wall time
+    t          = 0.0                        # current simulation time [s]
+    state_old  = None                       # previous state (CTCS / SI2 leapfrog)
+    epi_n_prev = None                       # previous-step nonlinear RHS (EPI3 only)
 
     for n in range(n_steps):
+        # --- Save q^{n-1} for Robert-Asselin (SI2 only) ---
+        # After step() returns, state_old is overwritten with q^n, so we must
+        # save q^{n-1} BEFORE calling step().
+        q_nm1 = state_old if is_si2 else None
+
         # --- Advance the model by one timestep ---
-        # step() is the central dispatcher in integrators.py.
-        # It returns a 3-tuple: (new_state, prev_state, epi_extra).
-        # For RK4: epi_extra is None; state_old is just the previous state for bookkeeping.
-        state_new, state_old, _ = step(state, grid, dt,
-                                        scheme="RK4",
-                                        state_old=state_old)
+        state_new, state_old, epi_extra = step(state, grid, dt,
+                                                scheme=scheme,
+                                                state_old=state_old,
+                                                epi_n_prev=epi_n_prev)
+
+        # --- Robert-Asselin time filter (SI2 only, skip bootstrap step) ---
+        # Damps the spurious computational mode from the 3-level leapfrog.
+        # Filters q^n (= state_old) in-place before advancing the level pointers:
+        #   q^n_filt = q^n + (alpha/2) * (q^{n-1} - 2*q^n + q^{n+1})
+        # state_old (returned by step) = q^n; q_nm1 = q^{n-1}; state_new = q^{n+1}
+        if is_si2 and q_nm1 is not None:
+            state_old = robert_asselin_filter_time(q_nm1, state_old, state_new)
+
         state = state_new   # advance: state now contains the solution at t + dt
+
+        # --- Store EPI3 nonlinear RHS for next step ---
+        if epi_extra is not None:
+            epi_n_prev = epi_extra.get("n_rhs")  # EPI2/3
+
+        # --- Shapiro filter (SI and EPI only) ---
+        # Damps 2Δx aliasing from the explicit nonlinear N(q^n) term.
+        # P&C (2022) eq 5.6-5.7: applied every 2 EPI steps at dt=15s → 30s period.
+        # For SI we match the same 30s physical period to avoid over-smoothing.
+        if shapiro and (is_si or is_epi) and (n + 1) % shapiro_interval == 0:
+            state = shapiro_filter(state, grid)
+
         t += dt             # increment simulation time
 
         # --- Blow-up detection ---
-        # If any value in the w (vertical velocity) field is not finite (NaN or Inf),
-        # the simulation has blown up — usually due to a CFL violation or instability.
         if not np.all(np.isfinite(state["w"])):
             print("  BLOW-UP at t={:.1f}s".format(t))
             break
@@ -375,7 +449,7 @@ def _smooth_for_plot(theta, passes=4):
 # PLOTTING FUNCTIONS
 # ===========================================================================
 
-def plot_final(grid, snapshots, diag, dx):
+def plot_final(grid, snapshots, diag, dx, scheme="RK4", shapiro=False, kappa=0.0):
     """
     Two-panel figure showing the initial condition (t=0) and final state (t=700s).
     This is the direct equivalent of G&R (2008) Figure 3.
@@ -399,9 +473,11 @@ def plot_final(grid, snapshots, diag, dx):
 
     # Create a figure with two side-by-side panels (1 row, 2 columns)
     fig, axes = plt.subplots(1, 2, figsize=(12, 5.5))
+    filter_tag = " + Shapiro filter" if shapiro else ""
     fig.suptitle(
         "G&R (2008) Case 2 - Rising Thermal Bubble\n"
-        "RK4, dx=dz={:.0f} m  (t=700 panel: 4x display smoothing)".format(dx),
+        "{}{}, dx=dz={:.0f} m  (t=700 panel: 4x display smoothing)".format(
+            scheme, filter_tag, dx),
         fontsize=12,
     )
 
@@ -448,14 +524,16 @@ def plot_final(grid, snapshots, diag, dx):
         ax.set_ylim(0, grid.Lz / 1000.0)
 
     plt.tight_layout()
-    fname = os.path.join(OUT_DIR, "gr_case2_final_dx{}m.png".format(int(dx)))
+    kappa_tag = "_kappa{}".format(int(kappa)) if kappa > 0 else ""
+    tag   = "{}_dx{}m{}{}".format(scheme, int(dx), "_shapiro" if shapiro else "", kappa_tag)
+    fname = os.path.join(OUT_DIR, "gr_case2_final_{}.png".format(tag))
     plt.savefig(fname, dpi=150, bbox_inches="tight")
     plt.close()
     print("  Saved -> {}".format(fname))
     return fname
 
 
-def plot_evolution(grid, snapshots, diag, dx):
+def plot_evolution(grid, snapshots, diag, dx, scheme="RK4", shapiro=False, kappa=0.0):
     """
     Multi-panel evolution figure: one panel per saved snapshot (t=0 to t=700 s).
 
@@ -488,20 +566,16 @@ def plot_evolution(grid, snapshots, diag, dx):
                              figsize=(4.5 * n_cols, 4.5 * n_rows))
     axes = axes.flatten()   # convert 2D array of axes to 1D for easy indexing
 
+    filter_tag = " + Shapiro filter" if shapiro else ""
     fig.suptitle(
         "G&R (2008) Case 2 - Rising Thermal Bubble: Evolution\n"
-        "RK4, dx=dz={:.0f} m  (each panel: 4x display smoothing)".format(dx),
+        "{}{}, dx=dz={:.0f} m  (per-panel colour scale; 4x display smoothing)".format(
+            scheme, filter_tag, dx),
         fontsize=13,
     )
 
     X = grid.x_2d / 1000.0   # x coordinates in km
     Z = grid.z_2d / 1000.0   # z coordinates in km
-
-    # Compute a shared colour scale across ALL snapshots.
-    # This ensures the colour mapping is consistent across panels
-    # (so t=700 red looks the same as t=0 red).
-    global_max = max(s["theta"].max() for _, s in snapshots)
-    global_max = max(global_max, 0.05)   # ensure a minimum scale even if field is very small
 
     for idx, (t_s, state) in enumerate(snapshots):
         ax = axes[idx]
@@ -509,16 +583,21 @@ def plot_evolution(grid, snapshots, diag, dx):
         # Apply 4x display-only Shapiro smoothing to remove grid-scale noise
         theta = _smooth_for_plot(state["theta"], passes=4)
 
-        # Filled contour plot using the shared colour scale (vmin=0, vmax=global_max)
+        # Per-panel colour scale: use each snapshot's own range so early
+        # (small-amplitude) panels are just as readable as the final panel.
+        panel_max = max(float(theta.max()), 0.02)   # floor at 0.02 K to avoid blank panels
+        panel_min = min(float(theta.min()), 0.0)    # keep 0 in scale if no negative values
+
+        # Filled contour plot with per-panel scaling
         cf = ax.contourf(X, Z, theta,
                          levels=50,
                          cmap="RdYlBu_r",
-                         vmin=0.0,          # always start from 0 K (blue = background)
-                         vmax=global_max,   # shared maximum across all panels
-                         extend="max")      # values above global_max get the top colour
+                         vmin=panel_min,
+                         vmax=panel_max,
+                         extend="both")
 
-        # Black contour lines at the G&R reference levels
-        valid_lvl = CONTOUR_LEVELS[CONTOUR_LEVELS <= global_max + 0.01]
+        # Black contour lines — use panel_max so there are always visible lines
+        valid_lvl = CONTOUR_LEVELS[CONTOUR_LEVELS <= panel_max + 0.01]
         if len(valid_lvl):
             ax.contour(X, Z, theta,
                        levels=valid_lvl,
@@ -526,7 +605,7 @@ def plot_evolution(grid, snapshots, diag, dx):
                        linewidths=0.6,
                        alpha=0.7)   # slightly transparent so they don't dominate
 
-        ax.set_title("t = {:.0f} s".format(t_s), fontsize=11)
+        ax.set_title("t = {:.0f} s  (max {:.3f} K)".format(t_s, panel_max), fontsize=10)
         ax.set_xlabel("x  (km)")
         ax.set_ylabel("z  (km)")
         ax.set_aspect("equal")
@@ -541,7 +620,9 @@ def plot_evolution(grid, snapshots, diag, dx):
         axes[idx].set_visible(False)
 
     plt.tight_layout()
-    fname = os.path.join(OUT_DIR, "gr_case2_evolution_dx{}m.png".format(int(dx)))
+    kappa_tag = "_kappa{}".format(int(kappa)) if kappa > 0 else ""
+    tag   = "{}_dx{}m{}{}".format(scheme, int(dx), "_shapiro" if shapiro else "", kappa_tag)
+    fname = os.path.join(OUT_DIR, "gr_case2_evolution_{}.png".format(tag))
     plt.savefig(fname, dpi=130, bbox_inches="tight")
     plt.close()
     print("  Saved -> {}".format(fname))
@@ -552,9 +633,9 @@ def plot_evolution(grid, snapshots, diag, dx):
 # VALIDATION TABLE
 # ===========================================================================
 
-def print_diagnostics(diag, dx):
+def print_diagnostics(diag, dx, scheme="RK4"):
     """
-    Print a comparison table of our RK4 results against G&R (2008) Table 3.
+    Print a comparison table of our results against G&R (2008) Table 3.
 
     G&R Table 3 gives wmax, theta'_max, umax at t=700 s for five models
     (SE1, SE2, SE3, DG2, DG3) at dx=5 m with 10th-order polynomials.
@@ -567,10 +648,11 @@ def print_diagnostics(diag, dx):
     """
     print("")
     print("=" * 62)
-    print("  VALIDATION vs G&R (2008) Table 3  (dx={:.0f} m, t=700s)".format(dx))
+    print("  VALIDATION vs G&R (2008) Table 3  (scheme={}, dx={:.0f} m, t=700s)".format(
+          scheme, dx))
     print("=" * 62)
     print("  {:<18}  {:>12}  {:>12}  {:>12}".format(
-          "Quantity", "Our RK4", "G&R SE(5m)", "G&R DG(5m)"))
+          "Quantity", "Our {}".format(scheme), "G&R SE(5m)", "G&R DG(5m)"))
     print("  " + "-" * 58)
 
     # Each row: (label, our value, G&R SE reference, G&R DG reference)
@@ -607,32 +689,45 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="G&R (2008) Case 2: Rising Thermal Bubble benchmark"
     )
+    parser.add_argument("--scheme", default="RK4",
+                        choices=["RK4", "SI", "SI2", "SI2LU", "EPI2", "EPI3",
+                                 "FTCS", "BTCS", "CTCS"],
+                        help="Time integration scheme (default: RK4)")
     parser.add_argument("--dx",    type=float, default=10.0,
                         help="Grid spacing in m (default 10 m; paper reference uses 5 m)")
     parser.add_argument("--dt",    type=float, default=None,
-                        help="Time step in s (default: auto-compute for acoustic CFL~0.35)")
+                        help="Time step in s (default: auto per scheme: "
+                             "RK4→0.01s, SI→1s, EPI→5s)")
     parser.add_argument("--t_end", type=float, default=700.0,
-                        help="Simulation end time in s (default 700 s, the paper benchmark time)")
+                        help="Simulation end time in s (default 700 s)")
+    parser.add_argument("--shapiro", dest="shapiro", action="store_true", default=False,
+                        help="Apply Shapiro 1-2-1 filter every 2 steps (for SI/EPI; "
+                             "damps 2dx aliasing noise)")
+    parser.add_argument("--diffusion", type=float, default=0.0,
+                        help="Biharmonic (∇⁴) diffusion coeff nu4 [m⁴/s] (default 0). "
+                             "Stable up to ~312 m⁴/s at dx=10m dt=1s. Suggest 200.")
     args = parser.parse_args()
 
     # -----------------------------------------------------------------------
     # Run the simulation
     # -----------------------------------------------------------------------
-    grid, snapshots, diag = run(dx=args.dx, dt=args.dt, t_end=args.t_end)
+    grid, snapshots, diag = run(
+        dx=args.dx, dt=args.dt, t_end=args.t_end,
+        scheme=args.scheme, shapiro=args.shapiro, kappa=args.diffusion,
+    )
 
     # -----------------------------------------------------------------------
     # Print validation table
     # -----------------------------------------------------------------------
-    print_diagnostics(diag, args.dx)
+    print_diagnostics(diag, args.dx, scheme=args.scheme)
 
     # -----------------------------------------------------------------------
     # Generate plots and report filenames
     # -----------------------------------------------------------------------
-    # plot_final: two-panel figure (t=0 and t=700s), matching G&R Fig. 3
-    f1 = plot_final(grid, snapshots, diag, args.dx)
-
-    # plot_evolution: 8-panel figure showing every 100 s from t=0 to t=700 s
-    f2 = plot_evolution(grid, snapshots, diag, args.dx)
+    f1 = plot_final(grid, snapshots, diag, args.dx,
+                    scheme=args.scheme, shapiro=args.shapiro, kappa=args.diffusion)
+    f2 = plot_evolution(grid, snapshots, diag, args.dx,
+                        scheme=args.scheme, shapiro=args.shapiro, kappa=args.diffusion)
 
     print("")
     print("  Final plot     : {}".format(f1))
