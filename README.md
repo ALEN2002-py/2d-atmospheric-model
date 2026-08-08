@@ -644,7 +644,7 @@ python compare_schemes.py --schemes RK4 SI SI2 EPI2 EPI3
 | **Real measured efficiency frontier (RK4 vs SI vs SI2) — G&R** | ✅ (headline result: RK4 beats SI/SI2, but SI2LU beats RK4, §10.2) |
 | Real measured efficiency frontier — P&C | ✅ (SI2LU ~11.6× faster than RK4 at 3.5% error, dt chosen from advective CFL=1) |
 | Higher-resolution study (Δx=5m) — G&R | ✅ |
-| Straka cold density current | ⚠️ pending |
+| Exponential Scheme | ⚠️ pending |
 | Dissertation write-up | 🔜 Aug 2026 |
 
 ---
