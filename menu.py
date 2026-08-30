@@ -60,12 +60,12 @@ SCHEMES = {
     "5": {"name": "SI    — Semi-Implicit IMEX",                "key": "SI",
           "order": "1st", "type": "Semi-implicit",
           "stability": "1st order: N explicit, L implicit via GMRES. No acoustic CFL."},
-    "6": {"name": "EPI2  — Exponential Propagation Iterative", "key": "EPI2",
-          "order": "2nd", "type": "Exponential (Krylov)",
-          "stability": "e^(L*dt) via Arnoldi. No CFL on L."},
+    "6": {"name": "ETD1  — Exponential Time Differencing",     "key": "ETD1",
+          "order": "1st", "type": "Exponential (Krylov)",
+          "stability": "e^(L*dt) via Arnoldi. No CFL on L. Cox & Matthews 2002."},
     "7": {"name": "EPI3  — Exponential Propagation Iterative", "key": "EPI3",
           "order": "3rd", "type": "Exponential (Krylov + phi2)",
-          "stability": "EPI2 + correction. Pudykiewicz & Clancy 2022."},
+          "stability": "ETD1 + correction. Pudykiewicz & Clancy 2022."},
 }
 
 _experiment_counter = [0]

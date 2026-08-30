@@ -56,22 +56,18 @@ OUT_DIR      = "output/figures"
 RESULTS_DIR  = "output/results"
 GMRES_CACHE  = os.path.join(RESULTS_DIR, "gmres_perf_dx10m.json")
 RK4_CACHE    = os.path.join(RESULTS_DIR, "rk4_dt_sweep_dx10m.json")
-EPI2V_CACHE  = os.path.join(RESULTS_DIR, "epi2v_dt_sweep_dx10m.json")
+ETD1V_CACHE  = os.path.join(RESULTS_DIR, "etd1v_dt_sweep_dx10m.json")
 os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# Internal scheme keys ("EPI2V") are unchanged; this only renames the
-# thesis-facing plot labels to match the dissertation's ETD1/ETD1V terminology.
-DISPLAY_NAME = {"EPI2V": "ETD1V"}
-
-# EPI2V has no acoustic-CFL restriction (unconditionally stable linear part),
+# ETD1V has no acoustic-CFL restriction (unconditionally stable linear part),
 # so this range deliberately spans from RK4-comparable short steps up past
 # where SI/SI2 already struggle -- per Dr. Clancy's request to see the full
-# shape of the curve, not just the long-dt regime. Because EPI2V's sub-step
+# shape of the curve, not just the long-dt regime. Because ETD1V's sub-step
 # count p scales linearly with dt (p ~ dt), total Krylov work per run is
 # roughly dt-INDEPENDENT (n_steps ~ 1/dt, p ~ dt, product ~ const) -- so,
 # unlike RK4, sweeping small dt here is not disproportionately expensive.
-EPI2V_DT_VALS = [0.02, 0.1, 0.5, 1.0, 2.0, 4.0, 8.0]
+ETD1V_DT_VALS = [0.02, 0.1, 0.5, 1.0, 2.0, 4.0, 8.0]
 
 # ---------------------------------------------------------------------------
 # G&R Case 2 parameters
@@ -182,13 +178,13 @@ def get_rk4_results(skip_run):
     return results
 
 
-def run_epi2v(dt):
+def run_etd1v(dt):
     grid  = Grid({"Lx": LX, "Lz": LZ, "dx": DX, "dz": DX})
     state = make_ic(grid)
     n_steps = int(round(T_END / dt))
     t0 = wall_time.perf_counter()
     for _ in range(n_steps):
-        state, _, _ = step(state, grid, dt, scheme="EPI2V")
+        state, _, _ = step(state, grid, dt, scheme="ETD1V")
         if not np.isfinite(state["theta"]).all() or np.abs(state["theta"]).max() > 50.0:
             break
     wall = wall_time.perf_counter() - t0
@@ -200,33 +196,33 @@ def run_epi2v(dt):
     }
 
 
-def _run_epi2v_worker(dt):
-    """Module-level (picklable) wrapper so each EPI2V dt runs in its own
+def _run_etd1v_worker(dt):
+    """Module-level (picklable) wrapper so each ETD1V dt runs in its own
     process via ProcessPoolExecutor -- the dt points are fully independent."""
-    return dt, run_epi2v(dt)
+    return dt, run_etd1v(dt)
 
 
-def get_epi2v_results(skip_run):
-    if os.path.exists(EPI2V_CACHE):
-        with open(EPI2V_CACHE, "r", encoding="utf-8") as f:
+def get_etd1v_results(skip_run):
+    if os.path.exists(ETD1V_CACHE):
+        with open(ETD1V_CACHE, "r", encoding="utf-8") as f:
             cached = json.load(f)
-        print(f"  Loaded cached EPI2V results from {EPI2V_CACHE}")
+        print(f"  Loaded cached ETD1V results from {ETD1V_CACHE}")
         return cached
     if skip_run:
-        print("  --skip-epi2v and no cache found -- EPI2V points will be omitted")
+        print("  --skip-etd1v and no cache found -- ETD1V points will be omitted")
         return {}
 
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
                 "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         os.environ[var] = "1"
 
-    n_workers = min(len(EPI2V_DT_VALS), os.cpu_count() or 1)
-    print(f"  Running {len(EPI2V_DT_VALS)} EPI2V dt value(s) across "
+    n_workers = min(len(ETD1V_DT_VALS), os.cpu_count() or 1)
+    print(f"  Running {len(ETD1V_DT_VALS)} ETD1V dt value(s) across "
           f"{n_workers} worker process(es) in parallel...", flush=True)
 
     results = {}
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        futures = {executor.submit(_run_epi2v_worker, dt): dt for dt in EPI2V_DT_VALS}
+        futures = {executor.submit(_run_etd1v_worker, dt): dt for dt in ETD1V_DT_VALS}
         for fut in as_completed(futures):
             dt, r = fut.result()
             results[str(dt)] = r
@@ -234,9 +230,9 @@ def get_epi2v_results(skip_run):
             print(f"    dt={dt}s: theta_max={r['theta_max']:.3f}K  "
                   f"w_max={r['w_max']:.3f}m/s  wall={r['wall_time']:.1f}s{blow}", flush=True)
 
-    with open(EPI2V_CACHE, "w", encoding="utf-8") as f:
+    with open(ETD1V_CACHE, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
-    print(f"  Cached EPI2V results -> {EPI2V_CACHE}")
+    print(f"  Cached ETD1V results -> {ETD1V_CACHE}")
     return results
 
 
@@ -250,13 +246,13 @@ def load_gmres_cache():
         return json.load(f)
 
 
-def _collect_series(rk4_results, gmres_results, scheme, epi2v_results=None):
+def _collect_series(rk4_results, gmres_results, scheme, etd1v_results=None):
     """Return (dt_vals, wall_times, errors) sorted by dt, blown-up points excluded."""
     pts = []
     if scheme == "RK4":
         src = rk4_results
-    elif scheme == "EPI2V":
-        src = epi2v_results or {}
+    elif scheme == "ETD1V":
+        src = etd1v_results or {}
     else:
         src = gmres_results.get(scheme, {})
     for dt_str, r in src.items():
@@ -271,7 +267,7 @@ def _collect_series(rk4_results, gmres_results, scheme, epi2v_results=None):
     return list(dts), list(walls), list(errs)
 
 
-def make_frontier_plot(rk4_results, gmres_results, epi2v_results=None):
+def make_frontier_plot(rk4_results, gmres_results, etd1v_results=None):
     """Line plot (one line per scheme, points ordered by dt) instead of a
     scattered/annotated cloud -- much easier to read the dt progression and
     compare schemes than dt-labelled text scattered next to each marker."""
@@ -282,18 +278,18 @@ def make_frontier_plot(rk4_results, gmres_results, epi2v_results=None):
         "SI":    {"color": "#9467bd", "marker": "s"},
         "SI2":   {"color": "#2ca02c", "marker": "^"},
         "SI2LU": {"color": "#1f77b4", "marker": "D"},
-        "EPI2V": {"color": "#ff7f0e", "marker": "P"},
+        "ETD1V": {"color": "#ff7f0e", "marker": "P"},
     }
 
-    for i, scheme in enumerate(("RK4", "SI2", "EPI2V")):
-        dts, walls, errs = _collect_series(rk4_results, gmres_results, scheme, epi2v_results)
+    for i, scheme in enumerate(("RK4", "SI2", "ETD1V")):
+        dts, walls, errs = _collect_series(rk4_results, gmres_results, scheme, etd1v_results)
         if not walls:
             continue
         s = styles[scheme]
         ax.plot(walls, errs, "-", color=s["color"], lw=1.6, alpha=0.75, zorder=3)
         ax.scatter(walls, errs, s=95, color=s["color"], marker=s["marker"],
                    edgecolor="white", linewidth=0.8, zorder=5,
-                   label=f"{DISPLAY_NAME.get(scheme, scheme)} (measured)")
+                   label=f"{scheme} (measured)")
 
         # Label every point with just its dt -- alternate above/below by
         # index so labels from a tightly-packed scheme don't stack directly
@@ -326,7 +322,7 @@ def make_frontier_plot(rk4_results, gmres_results, epi2v_results=None):
     print(f"  Saved: {out}")
 
 
-def make_relative_time_plot(rk4_results, gmres_results, epi2v_results):
+def make_relative_time_plot(rk4_results, gmres_results, etd1v_results):
     """
     The plot Dr. Clancy sketched on the whiteboard: wall time for each
     scheme, at each dt, divided by RK4's OWN best (fastest stable) wall
@@ -352,12 +348,12 @@ def make_relative_time_plot(rk4_results, gmres_results, epi2v_results):
         "SI":    {"color": "#9467bd", "marker": "s"},
         "SI2":   {"color": "#2ca02c", "marker": "^"},
         "SI2LU": {"color": "#1f77b4", "marker": "D"},
-        "EPI2V": {"color": "#ff7f0e", "marker": "P"},
+        "ETD1V": {"color": "#ff7f0e", "marker": "P"},
     }
 
     any_plotted = False
-    for scheme in ("RK4", "SI2", "EPI2V"):
-        dts, walls, _ = _collect_series(rk4_results, gmres_results, scheme, epi2v_results)
+    for scheme in ("RK4", "SI2", "ETD1V"):
+        dts, walls, _ = _collect_series(rk4_results, gmres_results, scheme, etd1v_results)
         if not walls:
             continue
         any_plotted = True
@@ -366,7 +362,7 @@ def make_relative_time_plot(rk4_results, gmres_results, epi2v_results):
         ax.plot(dts, rel, "-", color=s["color"], lw=1.8, alpha=0.8, zorder=3)
         ax.scatter(dts, rel, s=95, color=s["color"], marker=s["marker"],
                    edgecolor="white", linewidth=0.8, zorder=5,
-                   label=f"{DISPLAY_NAME.get(scheme, scheme)} (measured)")
+                   label=f"{scheme} (measured)")
 
     ax.axhline(y=1.0, color="#888", lw=1.0, ls="--", zorder=1,
                label="RK4's own best dt (baseline = 1)")
@@ -391,7 +387,7 @@ def make_relative_time_plot(rk4_results, gmres_results, epi2v_results):
     print(f"  Saved: {out}")
 
 
-def make_error_vs_dt_plot(rk4_results, gmres_results, epi2v_results):
+def make_error_vs_dt_plot(rk4_results, gmres_results, etd1v_results):
     """
     The OTHER half of Dr. Clancy's whiteboard sketch (its top panel): error
     plotted directly against dt, rather than against wall time as the
@@ -409,12 +405,12 @@ def make_error_vs_dt_plot(rk4_results, gmres_results, epi2v_results):
         "SI":    {"color": "#9467bd", "marker": "s"},
         "SI2":   {"color": "#2ca02c", "marker": "^"},
         "SI2LU": {"color": "#1f77b4", "marker": "D"},
-        "EPI2V": {"color": "#ff7f0e", "marker": "P"},
+        "ETD1V": {"color": "#ff7f0e", "marker": "P"},
     }
 
     any_plotted = False
-    for scheme in ("RK4", "SI2", "EPI2V"):
-        dts, _, errs = _collect_series(rk4_results, gmres_results, scheme, epi2v_results)
+    for scheme in ("RK4", "SI2", "ETD1V"):
+        dts, _, errs = _collect_series(rk4_results, gmres_results, scheme, etd1v_results)
         if not errs:
             continue
         any_plotted = True
@@ -422,7 +418,7 @@ def make_error_vs_dt_plot(rk4_results, gmres_results, epi2v_results):
         ax.plot(dts, errs, "-", color=s["color"], lw=1.8, alpha=0.8, zorder=3)
         ax.scatter(dts, errs, s=95, color=s["color"], marker=s["marker"],
                    edgecolor="white", linewidth=0.8, zorder=5,
-                   label=f"{DISPLAY_NAME.get(scheme, scheme)} (measured)")
+                   label=f"{scheme} (measured)")
 
     ax.set_xscale("log")
     ax.set_xlabel(r"$\Delta t$ [s]  (log scale)", fontsize=12)
@@ -445,7 +441,7 @@ def make_error_vs_dt_plot(rk4_results, gmres_results, epi2v_results):
     print(f"  Saved: {out}")
 
 
-def print_summary_table(rk4_results, gmres_results, epi2v_results=None):
+def print_summary_table(rk4_results, gmres_results, etd1v_results=None):
     print("\n" + "=" * 100)
     print("  MEASURED EFFICIENCY COMPARISON -- G&R Case 2, dx=10 m, t_end=700 s")
     print("=" * 100)
@@ -474,8 +470,8 @@ def print_summary_table(rk4_results, gmres_results, epi2v_results=None):
             if kappa is None:
                 kappa = _kappa_used(float(dt_str))
             _row(scheme, dt_str, r, kappa=kappa)
-    for dt_str, r in (epi2v_results or {}).items():
-        _row("EPI2V", dt_str, r, kappa=None)
+    for dt_str, r in (etd1v_results or {}).items():
+        _row("ETD1V", dt_str, r, kappa=None)
     print("=" * 100)
     print(f"  Reference: G&R (2008) Table 3, SE models, 5 m resolution: "
           f"theta'_max = {THETA_REF} K")
@@ -485,27 +481,27 @@ def print_summary_table(rk4_results, gmres_results, epi2v_results=None):
     if not any(gmres_results.get(s) for s in ("SI", "SI2")):
         print("  NOTE: the SI/SI2 cache currently only has SI2LU entries -- SI/SI2 rows")
         print("  and plot series are empty until gr_gmres_performance.py --scheme both")
-        print("  is (re-)run. Not an EPI2V-related gap.\n")
+        print("  is (re-)run. Not an ETD1V-related gap.\n")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Real (measured) dt/wall-time/accuracy comparison: RK4 vs SI vs SI2 vs EPI2V"
+        description="Real (measured) dt/wall-time/accuracy comparison: RK4 vs SI vs SI2 vs ETD1V"
     )
     parser.add_argument("--skip-rk4", action="store_true",
                         help="Don't run RK4 fresh; use cache only (omit if no cache)")
-    parser.add_argument("--skip-epi2v", action="store_true",
-                        help="Don't run EPI2V fresh; use cache only (omit if no cache)")
+    parser.add_argument("--skip-etd1v", action="store_true",
+                        help="Don't run ETD1V fresh; use cache only (omit if no cache)")
     args = parser.parse_args()
 
     gmres_results = load_gmres_cache()
     rk4_results   = get_rk4_results(args.skip_rk4)
-    epi2v_results = get_epi2v_results(args.skip_epi2v)
+    etd1v_results = get_etd1v_results(args.skip_etd1v)
 
-    print_summary_table(rk4_results, gmres_results, epi2v_results)
-    make_frontier_plot(rk4_results, gmres_results, epi2v_results)
-    make_relative_time_plot(rk4_results, gmres_results, epi2v_results)
-    make_error_vs_dt_plot(rk4_results, gmres_results, epi2v_results)
+    print_summary_table(rk4_results, gmres_results, etd1v_results)
+    make_frontier_plot(rk4_results, gmres_results, etd1v_results)
+    make_relative_time_plot(rk4_results, gmres_results, etd1v_results)
+    make_error_vs_dt_plot(rk4_results, gmres_results, etd1v_results)
 
 
 if __name__ == "__main__":

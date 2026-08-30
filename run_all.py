@@ -502,7 +502,7 @@ if __name__ == "__main__":
             "CTCS",
             "RK4",
             "SI",
-            "EPI2",
+            "ETD1",
             "EPI3",
         ]
     else:

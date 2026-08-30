@@ -156,8 +156,8 @@ def make_plot(results):
                 textcoords="offset points", fontsize=8.5, color="#2ca02c",
                 arrowprops=dict(arrowstyle="-", color="#2ca02c", lw=0.8))
 
-    # ---- Our EPI2 (L-N split, measured) ----
-    # From CLAUDE.md: EPI2 dt=1s → wall=94s, dt=2s → 74s, dt=15s → 15s
+    # ---- Our ETD1 (L-N split, measured) ----
+    # From CLAUDE.md: ETD1 dt=1s → wall=94s, dt=2s → 74s, dt=15s → 15s
     # At dt=1s: |w|_max=7.7 m/s (should be ~2.5), θ'_max unreliable due to no mushroom cap.
     # Error is high — estimate >30 % in w, large in θ′ structure.
     our_epi_data = [
@@ -171,11 +171,11 @@ def make_plot(results):
                    s=100, marker=mk, color="#ff7f0e",
                    facecolors="none", linewidths=1.8, zorder=4)
 
-    # Single legend entry for "our EPI2" group
-    epi2_patch = mpatches.Patch(facecolor="none", edgecolor="#ff7f0e",
+    # Single legend entry for "our ETD1" group
+    etd1_patch = mpatches.Patch(facecolor="none", edgecolor="#ff7f0e",
                                 linewidth=1.8,
-                                label="Our EPI2 (L-N split)\n[wrong physics, approx. error]")
-    ax.annotate("Our EPI2  dt=1–15 s\n(L-N split, broken mushroom cap)",
+                                label="Our ETD1 (L-N split)\n[wrong physics, approx. error]")
+    ax.annotate("Our ETD1  dt=1–15 s\n(L-N split, broken mushroom cap)",
                 xy=(74, 35), xytext=(80, 20),
                 textcoords="offset points", fontsize=8.5, color="#ff7f0e",
                 arrowprops=dict(arrowstyle="-", color="#ff7f0e", lw=0.8))
@@ -216,7 +216,7 @@ def make_plot(results):
             color="#b0b0b0", rotation=-30, ha="center")
 
     handles, labels = ax.get_legend_handles_labels()
-    handles.append(epi2_patch)
+    handles.append(etd1_patch)
     ax.legend(handles=handles, fontsize=8.5, loc="upper right",
               framealpha=0.93, edgecolor="#ccc")
 

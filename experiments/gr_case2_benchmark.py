@@ -100,14 +100,6 @@ from integrators import step, shapiro_filter, robert_asselin_filter_time  # time
 OUT_DIR = "output/figures"
 os.makedirs(OUT_DIR, exist_ok=True)   # create the directory if it doesn't already exist
 
-# Internal scheme keys ("EPI2V") are unchanged; this only renames the
-# thesis-facing plot titles to match the dissertation's ETD1/ETD1V terminology.
-DISPLAY_NAME = {"EPI2V": "ETD1V"}
-
-# Internal scheme keys ("EPI2V") are unchanged; this only renames the
-# thesis-facing plot titles to match the dissertation's ETD1/ETD1V terminology.
-DISPLAY_NAME = {"EPI2V": "ETD1V", "EPI2": "EPI2", "EPI3": "EPI3"}
-
 # ---------------------------------------------------------------------------
 # Paper parameters (G&R 2008, Section 3.2)
 # ---------------------------------------------------------------------------
@@ -197,7 +189,7 @@ def run(dx=10, dt=None, t_end=700.0, scheme="RK4", shapiro=False, kappa=0.0):
     dx      : float  — grid spacing in metres (dx = dz, unstaggered grid)
     dt      : float  — time step in seconds (None → auto-computed per scheme)
     t_end   : float  — simulation end time in seconds (default 700 s)
-    scheme  : str    — time integration scheme: 'RK4', 'SI', 'EPI2', 'EPI3', etc.
+    scheme  : str    — time integration scheme: 'RK4', 'SI', 'ETD1', 'EPI3', etc.
     kappa   : float  — explicit biharmonic diffusion coefficient ν₄ [m⁴/s] (default 0 = no diffusion)
                        Use 1-5 m²/s for mild noise control; 75 m²/s is density-current only
     shapiro : bool   — apply Shapiro (1-2-1) filter every 2 steps for SI/EPI schemes
@@ -215,7 +207,7 @@ def run(dx=10, dt=None, t_end=700.0, scheme="RK4", shapiro=False, kappa=0.0):
     is_explicit = scheme in ("RK4", "FTCS", "BTCS", "CTCS")
     is_si       = scheme in ("SI", "SI2", "SI2LU")   # any semi-implicit variant
     is_si2      = scheme in ("SI2", "SI2LU")  # leapfrog variant (GMRES or direct-LU)
-    is_epi      = scheme in ("EPI2", "EPI3", "EPI2V")
+    is_epi      = scheme in ("ETD1", "EPI3", "ETD1V")
 
     # -----------------------------------------------------------------------
     # Auto-compute timestep per scheme
@@ -343,7 +335,7 @@ def run(dx=10, dt=None, t_end=700.0, scheme="RK4", shapiro=False, kappa=0.0):
 
         # --- Store EPI3 nonlinear RHS for next step ---
         if epi_extra is not None:
-            epi_n_prev = epi_extra.get("n_rhs")  # EPI2/3
+            epi_n_prev = epi_extra.get("n_rhs")  # ETD1/EPI3
 
         # --- Shapiro filter (SI and EPI only) ---
         # Damps 2Δx aliasing from the explicit nonlinear N(q^n) term.
@@ -485,7 +477,7 @@ def plot_final(grid, snapshots, diag, dx, scheme="RK4", shapiro=False, kappa=0.0
     fig.suptitle(
         "G&R (2008) Case 2 - Rising Thermal Bubble\n"
         "{}{}, dx=dz={:.0f} m  (t=700 panel: 4x display smoothing)".format(
-            DISPLAY_NAME.get(scheme, scheme), filter_tag, dx),
+            scheme, filter_tag, dx),
         fontsize=12,
     )
 
@@ -578,7 +570,7 @@ def plot_evolution(grid, snapshots, diag, dx, scheme="RK4", shapiro=False, kappa
     fig.suptitle(
         "G&R (2008) Case 2 - Rising Thermal Bubble: Evolution\n"
         "{}{}, dx=dz={:.0f} m  (per-panel colour scale; 4x display smoothing)".format(
-            DISPLAY_NAME.get(scheme, scheme), filter_tag, dx),
+            scheme, filter_tag, dx),
         fontsize=13,
     )
 
@@ -698,8 +690,8 @@ if __name__ == "__main__":
         description="G&R (2008) Case 2: Rising Thermal Bubble benchmark"
     )
     parser.add_argument("--scheme", default="RK4",
-                        choices=["RK4", "SI", "SI2", "SI2LU", "EPI2", "EPI3",
-                                 "EPI2V", "FTCS", "BTCS", "CTCS"],
+                        choices=["RK4", "SI", "SI2", "SI2LU", "ETD1", "EPI3",
+                                 "ETD1V", "FTCS", "BTCS", "CTCS"],
                         help="Time integration scheme (default: RK4)")
     parser.add_argument("--dx",    type=float, default=10.0,
                         help="Grid spacing in m (default 10 m; paper reference uses 5 m)")

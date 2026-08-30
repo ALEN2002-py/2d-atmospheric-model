@@ -18,7 +18,7 @@ Test dt values
 --------------
   RK4  : 0.010, 0.013, 0.017, 0.022 s  (explicit CFL limit ~0.026 s at dx=10 m)
   SI   : 2, 5, 10, 15 s               (each ~700–820 s wall; ~50 min total)
-  EPI2 : 2, 5, 10, 15 s               (~82 s each regardless of dt)
+  ETD1 : 2, 5, 10, 15 s               (~82 s each regardless of dt)
   EPI3 : 2, 5, 10, 15 s               (~85 s each)
 
 SI is included by default but is slow (~50 min total for all 4 dt values).
@@ -97,13 +97,13 @@ GR = dict(
 DT_STUDY = {
     'RK4':  [0.010, 0.013, 0.017, 0.022],   # stay below CFL limit ~0.026 s
     'SI':   [2.0,   5.0,  10.0,  15.0  ],
-    'EPI2': [2.0,   5.0,  10.0,  15.0  ],
+    'ETD1': [2.0,   5.0,  10.0,  15.0  ],
     'EPI3': [2.0,   5.0,  10.0,  15.0  ],
 }
 
 COLORS = {'RK4': '#1f77b4', 'SI': '#d62728',
-          'EPI2': '#2ca02c', 'EPI3': '#ff7f0e'}
-MARKERS = {'RK4': 'o', 'SI': 's', 'EPI2': '^', 'EPI3': 'D'}
+          'ETD1': '#2ca02c', 'EPI3': '#ff7f0e'}
+MARKERS = {'RK4': 'o', 'SI': 's', 'ETD1': '^', 'EPI3': 'D'}
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +188,7 @@ def run_one(scheme, dt, grid, verbose=True):
     """
     t_end   = GR['t_end']
     n_steps = int(round(t_end / dt))
-    is_epi  = scheme in ('EPI2', 'EPI3')
+    is_epi  = scheme in ('ETD1', 'EPI3')
 
     state      = make_ic(grid)
     state_old  = None
@@ -233,7 +233,7 @@ def run_one(scheme, dt, grid, verbose=True):
 # Full efficiency study
 # ---------------------------------------------------------------------------
 
-def run_study(schemes=('RK4', 'SI', 'EPI2', 'EPI3')):
+def run_study(schemes=('RK4', 'SI', 'ETD1', 'EPI3')):
     """Run all (scheme, dt) combinations and return results dict."""
     ref, grid = compute_or_load_reference()
     if ref is None:
@@ -402,7 +402,7 @@ def main():
     parser.add_argument('--plot_only', action='store_true',
                         help='Load saved results and replot (no runs)')
     parser.add_argument('--schemes',  nargs='+',
-                        default=['RK4', 'SI', 'EPI2', 'EPI3'],
+                        default=['RK4', 'SI', 'ETD1', 'EPI3'],
                         help='Schemes to run (default: all four)')
     args = parser.parse_args()
 

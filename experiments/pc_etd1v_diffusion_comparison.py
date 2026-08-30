@@ -1,39 +1,41 @@
 """
-gr_epi2v_diffusion_comparison.py
+pc_etd1v_diffusion_comparison.py
 =================================
-G&R Case 2: Rising Thermal Bubble -- diffusion strategy comparison for EPI2V.
+P&C (2022) Experiment 1: Convective Bubble -- diffusion strategy comparison
+for ETD1V, on the paper's 5km domain with the flat-top+Gaussian bubble IC.
 
-Same structure as gr_si_diffusion_comparison.py, but for the EPI2V scheme
-(EPI2 with a frozen-advection linear operator L_n = L + A(q^n), the fix for
-plain EPI2's wrong physics -- see src/integrators.py's _epi2_varL). Variants:
+This is the P&C analogue of gr_etd1v_diffusion_comparison.py (which mirrors
+gr_si_diffusion_comparison.py's structure but for ETD1V -- ETD1 with a
+frozen-advection linear operator L_n = L + A(q^n), see src/integrators.py's
+_etd1v). Variants:
 
   1. IDEAL   (no diffusion) -- baseline
   2. nabla2  -- + Laplacian       kappa2 * nabla^2
   3. nabla4  -- + biharmonic     -kappa4 * nabla^4
   4. nabla8  -- + octaharmonic   -kappa8 * nabla^8
-  5. Shapiro -- + Shapiro 1-2-1 filter every 30 s
+  5. Shapiro -- + Shapiro 1-2-1 filter every ~30 s
 
-Same kappa reference targets as gr_si_diffusion_comparison.py (kappa2=3
-m^2/s, kappa4=200 m^4/s, kappa8=20000 m^8/s at dx=10m), so the amplitude
-results are directly comparable to the already-documented SI/SI2 numbers at
-matched damping strength.
+kappa reference targets (at dx=20m, the paper resolution) use the same
+damping-timescale formula as pc_si_diffusion_comparison.py: tau = 1/(kappa *
+(pi/dx)^n), targeting tau~50s at the 2*dx wave -- same starting point, same
+caveat that it was found ~8x-1580x too weak vs. the already-validated RK4
+reference at dx=20m for nabla4/nabla8 (see --kappa-scale).
 
-KEY DIFFERENCE FROM SI/SI2's DIFFUSION TREATMENT: EPI2V folds diffusion
-directly into its linear operator L_n (see _epi2_varL's docstring) instead
-of applying it as a separate forward-Euler correction. Since diffusion is
-linear in the state, exp(L_n*dt) integrates it EXACTLY -- there is no
-forward-Euler CFL cap on kappa here (unlike SI/SI2, where kappa is capped at
-kappa*eigenvalue_max*dt <= 2). The kappa targets below are therefore used
-at their full reference value regardless of dt.
+KEY DIFFERENCE FROM SI/SI2's DIFFUSION TREATMENT: ETD1V folds diffusion
+directly into its linear operator L_n instead of applying it as a separate
+forward-Euler correction. Since diffusion is linear in the state,
+exp(L_n*dt) integrates it EXACTLY -- there is no forward-Euler CFL cap on
+kappa here (unlike SI/SI2's kappa*eigenvalue_max*dt <= 2 bound).
 
 USAGE
 -----
-  python experiments/gr_epi2v_diffusion_comparison.py
-  python experiments/gr_epi2v_diffusion_comparison.py --dx 5
-  python experiments/gr_epi2v_diffusion_comparison.py --variants nabla2,nabla4,nabla8
+  python experiments/pc_etd1v_diffusion_comparison.py
+  python experiments/pc_etd1v_diffusion_comparison.py --kappa-scale 2
+  python experiments/pc_etd1v_diffusion_comparison.py --dx 40 --variants nabla2,nabla4,nabla8
 """
 
 import argparse
+import math
 import os
 import sys
 import time as wall_time
@@ -73,66 +75,86 @@ from integrators import step, shapiro_filter
 OUT_DIR = "output/figures"
 os.makedirs(OUT_DIR, exist_ok=True)
 
-SCHEME = "EPI2V"
+SCHEME = "ETD1V"
 
 # ---------------------------------------------------------------------------
-# G&R Case 2 parameters
+# P&C Exp 1 parameters (Section 6.1)
 # ---------------------------------------------------------------------------
-LX, LZ  = 1000.0, 1000.0
-THETA_C = 0.5
-R_C     = 250.0
-X_C     = 500.0
-Z_C     = 350.0
-T_END   = 700.0
-SNAP_T  = [0, 100, 200, 300, 400, 500, 600, 700]
-CLEV    = np.arange(0.05, 0.526, 0.025)
+LX, LZ  = 5000.0, 5000.0
+AT      = 0.5       # K   bubble amplitude
+A_RAD   = 400.0     # m   flat-top radius (paper: 20*delta at delta=20m)
+SIGMA   = 100.0     # m   Gaussian edge width (paper: 5*delta)
+X0      = 2500.0    # m   bubble centre x
+Z0      = 700.0     # m   bubble centre z
 
-EPI_DT = 1.0      # s -- matches gr_case2_benchmark.py's EPI2V default dt
+T_END   = 1800.0    # full paper duration
+SNAP_T  = [0, 300, 600, 900, 1200, 1500, 1800]
+CLEV    = np.arange(0.02, 0.501, 0.02)
 
-# ---------------------------------------------------------------------------
-# Kappa values -- same reference targets as gr_si_diffusion_comparison.py's
-# _si_kappa, but WITHOUT the forward-Euler stability cap: EPI2V folds
-# diffusion into L_n and integrates it exactly via the matrix exponential
-# (unconditionally stable for any kappa >= 0), so no kappa*eig*dt<=2 bound
-# applies here.
-# ---------------------------------------------------------------------------
-def _epi_kappa(order, dx):
-    """Diffusion coefficient for given order and grid spacing, same targets
-    as SI/SI2's already-validated values -- kept identical for a direct,
-    matched-strength comparison against the documented SI/SI2 results."""
-    targets = {2: 3.0, 4: 200.0, 8: 20000.0}
-    return targets[order] * (dx / 10.0) ** order
+EPI_DT = 15.0    # s -- matches pc_exp1_benchmark.py's ETD1/EPI3/ETD1V default dt
+
+_G    = 9.81
+_TBAR = 300.0
+_B0   = _G * AT / _TBAR
+_L    = 2.0 * A_RAD
+T_BUOY  = math.sqrt(_L / _B0)     # ~ 220 s
+W_SCALE = math.sqrt(_B0 * _L)     # ~ 3.6 m/s
 
 # ---------------------------------------------------------------------------
-# Initial condition
+# Kappa values -- same tau=50s damping-timescale formula and reference
+# targets as pc_si_diffusion_comparison.py, but WITHOUT the forward-Euler
+# stability cap (see module docstring): ETD1V integrates diffusion exactly
+# via the matrix exponential, unconditionally stable for any kappa >= 0.
+# ---------------------------------------------------------------------------
+_DX_REF = 20.0   # paper resolution -- reference targets are quoted at this dx
+
+def _damping_kappa(order, dx, tau_target=50.0):
+    """kappa such that the 2*dx-wave damping timescale is tau_target seconds:
+    tau = 1 / (kappa * (pi/dx)^order)  =>  kappa = 1 / (tau_target * (pi/dx)^order)
+    """
+    return 1.0 / (tau_target * (math.pi / dx) ** order)
+
+_K2_REF = _damping_kappa(2, _DX_REF)
+_K4_REF = _damping_kappa(4, _DX_REF)
+_K8_REF = _damping_kappa(8, _DX_REF)
+
+def _epi_kappa(order, dx, scale=1.0):
+    """Diffusion coefficient for given order/grid spacing, no stability cap
+    (see module docstring). scale: multiplier on the tau=50s target -- the
+    default formula was found far weaker than the validated RK4 reference at
+    the same resolution for SI/SI2 (kappa4 ~8x, kappa8 ~1580x weaker); use
+    --kappa-scale to sweep strength the same way, e.g. scale=2 already
+    matched SI2's own real dx=20m run.
+    """
+    ref = {2: _K2_REF, 4: _K4_REF, 8: _K8_REF}[order]
+    return ref * (dx / _DX_REF) ** order * scale
+
+# ---------------------------------------------------------------------------
+# Initial condition -- P&C flat-top + Gaussian-edge bubble
 # ---------------------------------------------------------------------------
 def make_ic(grid):
     state = grid.allocate_state()
-    r = np.sqrt((grid.x_2d - X_C)**2 + (grid.z_2d - Z_C)**2)
+    r = np.sqrt((grid.x_2d - X0)**2 + (grid.z_2d - Z0)**2)
     state["theta"] = np.where(
-        r <= R_C,
-        0.5 * THETA_C * (1.0 + np.cos(np.pi * r / R_C)),
-        0.0
+        r <= A_RAD,
+        AT,
+        AT * np.exp(-(r - A_RAD)**2 / (2.0 * SIGMA**2)),
     )
     return state
 
 # ---------------------------------------------------------------------------
-# Run one EPI2V variant
+# Run one ETD1V variant
 # ---------------------------------------------------------------------------
 def run_epi_variant(label, dx, grid_params, snap_times=SNAP_T,
                     shapiro_period=30.0, t_end=None, dt=None):
     """
-    Run G&R Case 2 with EPI2V at the given dt (defaults to module EPI_DT=1s).
+    Run P&C Exp 1 with ETD1V at the given dt (defaults to module EPI_DT=15s).
 
-    EPI2V is a genuine single-step method (no leapfrog, no state_old, no
-    Robert-Asselin filter needed) -- simpler bookkeeping than the SI/SI2
-    version of this loop.
+    ETD1V is a genuine single-step method (no leapfrog, no state_old, no
+    Robert-Asselin filter needed).
 
-    Handles blow-up gracefully: stops at first NaN/Inf and saves last valid
-    snapshot.
-
-    t_end defaults to the module-level T_END (700s); overriding it is only
-    intended for quick pipeline smoke-tests.
+    t_end defaults to the module-level T_END (1800s, the full paper
+    benchmark); overriding it is only intended for quick pipeline smoke-tests.
     """
     if t_end is None:
         t_end = T_END
@@ -156,13 +178,15 @@ def run_epi_variant(label, dx, grid_params, snap_times=SNAP_T,
 
     target_steps = {}
     for ts in snap_times:
+        if ts > t_end:
+            continue   # can't snapshot a time beyond this run's own t_end
         if ts == 0:
             snaps[0] = {"theta": state["theta"].copy(),
                         "u":     state["u"].copy(),
                         "w":     state["w"].copy()}
         else:
             idx = int(round(ts / dt_exact))
-            target_steps[min(idx, nstep_total)] = ts
+            target_steps[idx] = ts
 
     t0 = wall_time.perf_counter()
     for n in range(nstep_total):
@@ -173,6 +197,7 @@ def run_epi_variant(label, dx, grid_params, snap_times=SNAP_T,
             print(f"  {label}: exception at t={blowup_t:.0f}s -- {e}", flush=True)
             break
 
+        # Blow-up threshold well above bubble scale AT=0.5K
         if not np.isfinite(state_new["theta"]).all() or \
            np.abs(state_new["theta"]).max() > 50.0:
             blowup_t = (n + 1) * dt_exact
@@ -223,7 +248,9 @@ def _run_variant_worker(payload):
 # ---------------------------------------------------------------------------
 # Evolution grid figure
 # ---------------------------------------------------------------------------
-def plot_evolution_grid(all_snaps, variant_labels, dx, out_path, dt=None):
+def plot_evolution_grid(all_snaps, variant_labels, dx, out_path, t_end=None, dt=None):
+    if t_end is None:
+        t_end = T_END
     if dt is None:
         dt = EPI_DT
     try:
@@ -232,8 +259,9 @@ def plot_evolution_grid(all_snaps, variant_labels, dx, out_path, dt=None):
     except ImportError:
         SMOOTH = False
 
+    snap_cols = [ts for ts in SNAP_T if ts <= t_end]
     n_rows = len(all_snaps)
-    n_cols = len(SNAP_T)
+    n_cols = len(snap_cols)
 
     PAD_L  = 1.8
     CELL_W = 1.55
@@ -260,7 +288,7 @@ def plot_evolution_grid(all_snaps, variant_labels, dx, out_path, dt=None):
     extent     = [0, LX / 1000, 0, LZ / 1000]
 
     for row, (snaps, label) in enumerate(zip(all_snaps, variant_labels)):
-        for col, ts in enumerate(SNAP_T):
+        for col, ts in enumerate(snap_cols):
             ax = axes[row][col]
             ax.set_facecolor("#0a1628")
             for spine in ax.spines.values():
@@ -286,11 +314,11 @@ def plot_evolution_grid(all_snaps, variant_labels, dx, out_path, dt=None):
                 ax.contour(X, Z, disp, levels=CLEV,
                            colors="white", linewidths=0.35, alpha=0.55)
 
-                skip = max(1, int(round(80.0 / dx)))
+                skip = max(1, int(round(320.0 / dx)))
                 ax.quiver(X[::skip, ::skip], Z[::skip, ::skip],
                           u_f[::skip, ::skip], w_f[::skip, ::skip],
                           color="white", alpha=0.55,
-                          scale=35, width=0.004,
+                          scale=40, width=0.004,
                           headwidth=3, headlength=4)
             else:
                 ax.text(0.5, 0.5, "blow-up", transform=ax.transAxes,
@@ -305,14 +333,14 @@ def plot_evolution_grid(all_snaps, variant_labels, dx, out_path, dt=None):
                              fontweight="bold", color="#222", pad=4)
             if row == n_rows - 1:
                 ax.tick_params(labelbottom=True)
-                ax.xaxis.set_major_locator(plt.MultipleLocator(0.5))
+                ax.xaxis.set_major_locator(plt.MultipleLocator(2.0))
                 ax.tick_params(axis="x", labelsize=6.5)
                 if col == 0:
                     ax.set_xlabel("x [km]", fontsize=7, labelpad=2)
             if col == 0:
                 ax.tick_params(labelleft=True)
                 ax.set_ylabel("z [km]", fontsize=7, labelpad=2)
-                ax.yaxis.set_major_locator(plt.MultipleLocator(0.5))
+                ax.yaxis.set_major_locator(plt.MultipleLocator(2.0))
                 ax.tick_params(axis="y", labelsize=6.5)
                 ax.text(-0.38, 0.5, label,
                         transform=ax.transAxes,
@@ -332,8 +360,8 @@ def plot_evolution_grid(all_snaps, variant_labels, dx, out_path, dt=None):
     cbar.outline.set_linewidth(0.5)
 
     fig.suptitle(
-        f"G&R Case 2 -- Rising Thermal Bubble  [{SCHEME} scheme, dt={dt:g} s]"
-        f"   (dx = {dx} m,  t_end = {T_END:.0f} s)",
+        f"P&C Exp 1 -- Convective Bubble  [{SCHEME} scheme, dt={dt:g} s]"
+        f"   (dx = {dx} m,  t_end = {t_end:.0f} s)",
         fontsize=11, fontweight="bold", color="#111",
         y=1.0 - 0.08 / fig_h,
     )
@@ -346,7 +374,9 @@ def plot_evolution_grid(all_snaps, variant_labels, dx, out_path, dt=None):
 # ---------------------------------------------------------------------------
 # Final snapshot figure
 # ---------------------------------------------------------------------------
-def plot_final_snapshot(all_snaps, variant_labels, dx, out_path, dt=None):
+def plot_final_snapshot(all_snaps, variant_labels, dx, out_path, t_end=None, dt=None):
+    if t_end is None:
+        t_end = T_END
     if dt is None:
         dt = EPI_DT
     try:
@@ -392,8 +422,8 @@ def plot_final_snapshot(all_snaps, variant_labels, dx, out_path, dt=None):
             spine.set_edgecolor("#334")
             spine.set_linewidth(0.6)
 
-        snap_t = T_END
-        snap = snaps.get(T_END)
+        snap_t = t_end
+        snap = snaps.get(t_end)
         if snap is None and snaps:
             snap_t = max(snaps.keys())
             snap = snaps[snap_t]
@@ -414,11 +444,11 @@ def plot_final_snapshot(all_snaps, variant_labels, dx, out_path, dt=None):
             ax.contour(X, Z, disp, levels=CLEV,
                        colors="white", linewidths=0.4, alpha=0.55)
 
-            skip = max(1, int(round(80.0 / dx)))
+            skip = max(1, int(round(320.0 / dx)))
             ax.quiver(X[::skip, ::skip], Z[::skip, ::skip],
                       u_f[::skip, ::skip], w_f[::skip, ::skip],
                       color="white", alpha=0.6,
-                      scale=35, width=0.004,
+                      scale=40, width=0.004,
                       headwidth=3, headlength=4)
 
         ax.set_xlim(0, LX / 1000)
@@ -426,16 +456,16 @@ def plot_final_snapshot(all_snaps, variant_labels, dx, out_path, dt=None):
 
         if row == n_rows - 1:
             ax.tick_params(labelbottom=True)
-            ax.xaxis.set_major_locator(plt.MultipleLocator(0.5))
+            ax.xaxis.set_major_locator(plt.MultipleLocator(2.0))
             ax.tick_params(axis="x", labelsize=8)
             ax.set_xlabel("x [km]", fontsize=9, labelpad=3)
         if col == 0:
             ax.tick_params(labelleft=True)
-            ax.yaxis.set_major_locator(plt.MultipleLocator(0.5))
+            ax.yaxis.set_major_locator(plt.MultipleLocator(1.0))
             ax.tick_params(axis="y", labelsize=8)
             ax.set_ylabel("z [km]", fontsize=9, labelpad=3)
 
-        panel_title = label if snap_t == T_END else f"{label}  [blew up, shown t={snap_t:.0f}s]"
+        panel_title = label if snap_t == t_end else f"{label}  [blew up, shown t={snap_t:.0f}s]"
         ax.set_title(panel_title, fontsize=9.5, fontweight="bold",
                      color="#111", pad=5)
 
@@ -452,7 +482,7 @@ def plot_final_snapshot(all_snaps, variant_labels, dx, out_path, dt=None):
     cbar.outline.set_linewidth(0.5)
 
     fig.suptitle(
-        f"G&R Case 2 -- Rising Thermal Bubble at t = {int(T_END)} s"
+        f"P&C Exp 1 -- Convective Bubble at t = {int(t_end)} s"
         f"  [{SCHEME} scheme, dt={dt:g} s]   (dx = {dx} m)",
         fontsize=12, fontweight="bold", color="#111",
         y=1.0 - 0.10 / fig_h,
@@ -466,7 +496,9 @@ def plot_final_snapshot(all_snaps, variant_labels, dx, out_path, dt=None):
 # ---------------------------------------------------------------------------
 # Vertical profile
 # ---------------------------------------------------------------------------
-def plot_vertical_profile(all_snaps, variant_labels, dx, out_path, dt=None):
+def plot_vertical_profile(all_snaps, variant_labels, dx, out_path, t_end=None, dt=None):
+    if t_end is None:
+        t_end = T_END
     if dt is None:
         dt = EPI_DT
     STYLES = [
@@ -482,21 +514,21 @@ def plot_vertical_profile(all_snaps, variant_labels, dx, out_path, dt=None):
     z_km = (np.arange(nz) + 0.5) * dx / 1000.0
     nx   = int(round(LX / dx))
     x_c  = (np.arange(nx) + 0.5) * dx
-    ix   = int(np.argmin(np.abs(x_c - X_C)))
+    ix   = int(np.argmin(np.abs(x_c - X0)))
 
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
 
     any_early = False
     for i, (snaps, label, style) in enumerate(zip(all_snaps, variant_labels, STYLES)):
-        snap_t = T_END
-        snap = snaps.get(T_END)
+        snap_t = t_end
+        snap = snaps.get(t_end)
         if snap is None and snaps:
             snap_t = max(snaps.keys())
             snap = snaps[snap_t]
         if snap is None:
             continue
         plot_label = label
-        if snap_t != T_END:
+        if snap_t != t_end:
             plot_label = f"{label}  [blew up, shown t={snap_t:.0f}s]"
             any_early = True
         th = snap["theta"] if isinstance(snap, dict) else snap
@@ -506,19 +538,19 @@ def plot_vertical_profile(all_snaps, variant_labels, dx, out_path, dt=None):
 
     ax.set_xlabel(r"$\theta'$ [K]", fontsize=12)
     ax.set_ylabel("z [km]", fontsize=12)
-    end_note = "\n(some variants blew up before t=700 s -- see legend)" if any_early else ""
+    end_note = f"\n(some variants blew up before t={t_end:.0f} s -- see legend)" if any_early else ""
     ax.set_title(
-        f"Vertical profile of $\\theta'$ at $x = 500$ m,  $t = {int(T_END)}$ s{end_note}\n"
-        f"G&R Case 2  [{SCHEME} scheme, dt={dt:g} s]  (dx = {dx} m)",
+        f"Vertical profile of $\\theta'$ at $x = {X0:.0f}$ m,  $t = {int(t_end)}$ s{end_note}\n"
+        f"P&C Exp 1  [{SCHEME} scheme, dt={dt:g} s]  (dx = {dx} m)",
         fontsize=11,
     )
-    ax.set_xlim(-0.02, 0.70)
-    ax.set_ylim(0.45, 1.02)
+    ax.set_xlim(-0.05, 0.60)
+    ax.set_ylim(0.0, LZ / 1000.0)
     ax.xaxis.set_major_locator(plt.MultipleLocator(0.1))
-    ax.yaxis.set_major_locator(plt.MultipleLocator(0.05))
+    ax.yaxis.set_major_locator(plt.MultipleLocator(0.5))
     ax.grid(axis="x", color="#ddd", lw=0.6, zorder=0)
     ax.grid(axis="y", color="#ddd", lw=0.6, zorder=0)
-    ax.legend(fontsize=9, loc="lower right", framealpha=0.9,
+    ax.legend(fontsize=9, loc="upper right", framealpha=0.9,
               edgecolor="#ccc", handlelength=2.8)
 
     fig.tight_layout()
@@ -531,14 +563,16 @@ def plot_vertical_profile(all_snaps, variant_labels, dx, out_path, dt=None):
 # ---------------------------------------------------------------------------
 # Summary table
 # ---------------------------------------------------------------------------
-def print_summary_table(labels, all_stats, dx):
+def print_summary_table(labels, all_stats, dx, t_end=None):
+    if t_end is None:
+        t_end = T_END
     W   = 95
     sep = "+" + "-"*42 + "+" + "-"*10 + "+" + "-"*10 + "+" + "-"*10 + "+" + "-"*10 + "+" + "-"*9 + "+"
     hdr = (f"| {'Variant':<40} | {'dt(s)':>8} | {'th_max(K)':>8} "
            f"| {'th_min(K)':>8} | {'wmax(m/s)':>8} | {'Wall(s)':>7} |")
 
     print("\n" + "="*W)
-    print(f"  {SCHEME} DIFFUSION COMPARISON  --  G&R Case 2, dx={dx} m, t=700 s")
+    print(f"  {SCHEME} DIFFUSION COMPARISON  --  P&C Exp 1, dx={dx} m, t={t_end:.0f} s")
     print("="*W)
     print(sep); print(hdr); print(sep)
     for label, s in zip(labels, all_stats):
@@ -553,22 +587,33 @@ def print_summary_table(labels, all_stats, dx):
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="G&R Case 2 diffusion comparison -- EPI2V scheme")
-    parser.add_argument("--dx", type=float, default=10.0,
-                        help="Grid spacing [m] (default 10)")
+        description="P&C Exp 1 diffusion comparison -- ETD1V scheme")
+    parser.add_argument("--dx", type=float, default=20.0,
+                        help="Grid spacing [m] (default 20, paper resolution)")
     parser.add_argument("--shapiro-period", type=float, default=30.0,
                         help="Shapiro filter interval [s] (default 30)")
     parser.add_argument("--variants", default="ideal,nabla2,nabla4,nabla8,shapiro",
                         help="Comma-separated subset of {ideal,nabla2,nabla4,nabla8,shapiro} "
                              "to run (default: all five)")
     parser.add_argument("--workers", type=int, default=None,
-                        help="Parallel worker processes (default: one per selected variant, "
-                             "capped at CPU count)")
-    parser.add_argument("--dt", type=float, default=None,
-                        help="Override EPI2V time step [s] (default: module EPI_DT=1.0s)")
+                        help="Parallel worker processes (default: one per selected "
+                             "variant, capped at CPU count)")
     parser.add_argument("--replot-only", metavar="PATH", default=None,
                         help="Skip the simulation and regenerate figures from a "
                              "previously-saved results cache")
+    parser.add_argument("--kappa-scale", type=float, default=1.0,
+                        help="Multiplier on the diffusion targets (default 1.0). The "
+                             "default tau=50s formula was found far weaker than the "
+                             "already-validated RK4/SI2 reference at dx=20m for SI/SI2 "
+                             "(kappa4 ~8x, kappa8 ~1580x weaker; scale=2 matched SI2's "
+                             "own real run there) -- not yet independently tuned for "
+                             "ETD1V, so treat scale=1 as a starting point.")
+    parser.add_argument("--dt", type=float, default=None,
+                        help="Override ETD1V time step [s] (default: module EPI_DT=15s, "
+                             "matching the paper's dt=15s and pc_exp1_benchmark.py's default)")
+    parser.add_argument("--t-end", type=float, default=None,
+                        help="Override simulation end time [s] (default: module T_END=1800s, "
+                             "the full paper duration)")
     args = parser.parse_args()
 
     if args.replot_only:
@@ -577,35 +622,40 @@ def main():
             cache = pickle.load(f)
         all_labels, all_stats, all_snaps = cache["labels"], cache["stats"], cache["snaps"]
         dx = cache["dx"]
+        t_end_cached = cache.get("t_end")
         dt_cached = cache.get("dt")
         print(f"  Loaded cached results from {args.replot_only} "
               f"({len(all_labels)} variant(s), dx={dx}m, "
-              f"dt={dt_cached if dt_cached is not None else EPI_DT}s)")
-        print_summary_table(all_labels, all_stats, dx)
+              f"dt={dt_cached if dt_cached is not None else EPI_DT}s, "
+              f"t_end={t_end_cached if t_end_cached is not None else T_END}s)")
+        print_summary_table(all_labels, all_stats, dx, t_end=t_end_cached)
         dt_tag = f"_dt{dt_cached:g}".replace(".", "p") if dt_cached is not None else ""
         tag = f"dx{int(dx)}m{dt_tag}"
         plot_evolution_grid(all_snaps, all_labels, dx,
-                            os.path.join(OUT_DIR, f"gr_epi2v_diffcomp_evolution_{tag}.png"),
-                            dt=dt_cached)
+                            os.path.join(OUT_DIR, f"pc_etd1v_diffcomp_evolution_{tag}.png"),
+                            t_end=t_end_cached, dt=dt_cached)
         plot_final_snapshot(all_snaps, all_labels, dx,
-                            os.path.join(OUT_DIR, f"gr_epi2v_diffcomp_final_{tag}.png"),
-                            dt=dt_cached)
+                            os.path.join(OUT_DIR, f"pc_etd1v_diffcomp_final_{tag}.png"),
+                            t_end=t_end_cached, dt=dt_cached)
         plot_vertical_profile(all_snaps, all_labels, dx,
-                              os.path.join(OUT_DIR, f"gr_epi2v_diffcomp_vprofile_{tag}.png"),
-                              dt=dt_cached)
+                              os.path.join(OUT_DIR, f"pc_etd1v_diffcomp_vprofile_{tag}.png"),
+                              t_end=t_end_cached, dt=dt_cached)
         return
 
-    dx     = args.dx
-    dt_arg = args.dt
-    k2 = _epi_kappa(2, dx)
-    k4 = _epi_kappa(4, dx)
-    k8 = _epi_kappa(8, dx)
+    dx        = args.dx
+    kscale    = args.kappa_scale
+    dt_arg    = args.dt
+    t_end_arg = args.t_end
+    k2 = _epi_kappa(2, dx, scale=kscale)
+    k4 = _epi_kappa(4, dx, scale=kscale)
+    k8 = _epi_kappa(8, dx, scale=kscale)
     sp = args.shapiro_period
 
     print(f"\n{'='*65}")
-    print(f"  G&R Case 2 -- {SCHEME} diffusion comparison")
-    print(f"  dx={dx} m   dt={dt_arg if dt_arg is not None else EPI_DT} s")
-    print(f"  kappa2={k2:.2f} m2/s   kappa4={k4:.1f} m4/s   kappa8={k8:.2e} m8/s")
+    print(f"  P&C Exp 1 -- {SCHEME} diffusion comparison")
+    print(f"  dx={dx} m   dt={dt_arg if dt_arg is not None else EPI_DT} s   kappa_scale={kscale:.1f}")
+    print(f"  T_buoy={T_BUOY:.0f}s  W_scale={W_SCALE:.2f} m/s  3T={3*T_BUOY:.0f}s")
+    print(f"  kappa2={k2:.3f} m^2/s   kappa4={k4:.2f} m^4/s   kappa8={k8:.2e} m^8/s")
     print(f"  (folded into L_n, integrated exactly -- no forward-Euler CFL cap)")
     print(f"  Shapiro every {sp:.0f} s")
     print(f"{'='*65}\n")
@@ -636,7 +686,7 @@ def main():
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
         futures = {
             executor.submit(_run_variant_worker,
-                            (label, dx, gp, sp, None, dt_arg)): label
+                            (label, dx, gp, sp, t_end_arg, dt_arg)): label
             for label, gp in variants
         }
         for fut in as_completed(futures):
@@ -652,36 +702,39 @@ def main():
         all_stats.append(stats)
         all_labels.append(label)
 
-    print_summary_table(all_labels, all_stats, dx)
+    print_summary_table(all_labels, all_stats, dx, t_end=t_end_arg)
 
     import pickle
+    kscale_tag = f"_kscale{kscale:.0f}" if kscale != 1.0 else ""
     dt_tag = f"_dt{dt_arg:g}".replace(".", "p") if dt_arg is not None else ""
     # Include the variant selection in the tag whenever it's not the full
     # default set -- otherwise two different --variants subsets run at the
-    # same dx/dt silently overwrite each other's cache and PNGs (same bug
-    # hit and fixed in pc_epi2v_diffusion_comparison.py this session).
+    # same dx/kappa-scale/dt silently overwrite each other's cache and PNGs
+    # (hit directly this session: nabla2/nabla4/nabla8 single-variant runs
+    # at matching --kappa-scale values all collided on the same filename).
     default_keys = {"ideal", "nabla2", "nabla4", "nabla8", "shapiro"}
     variant_tag = "" if selected == default_keys else "_" + "-".join(sorted(selected))
-    tag = f"dx{int(dx)}m{dt_tag}{variant_tag}"
-    results_dir  = os.path.join("output", "results")
+    tag = f"dx{int(dx)}m{kscale_tag}{dt_tag}{variant_tag}"
+    results_dir = os.path.join("output", "results")
     os.makedirs(results_dir, exist_ok=True)
-    cache_path = os.path.join(results_dir, f"gr_epi2v_diffcomp_{tag}_cache.pkl")
+    cache_path = os.path.join(results_dir, f"pc_etd1v_diffcomp_{tag}_cache.pkl")
     with open(cache_path, "wb") as f:
         pickle.dump({"labels": all_labels, "stats": all_stats,
-                    "snaps": all_snaps, "dx": dx, "dt": dt_arg}, f)
+                    "snaps": all_snaps, "dx": dx,
+                    "t_end": t_end_arg, "dt": dt_arg}, f)
     print(f"  Cached results (pre-plotting) -> {cache_path}\n"
           f"  If plotting fails below, regenerate figures with:\n"
           f"    python {os.path.basename(__file__)} --replot-only {cache_path}\n")
 
     plot_evolution_grid(all_snaps, all_labels, dx,
-                        os.path.join(OUT_DIR, f"gr_epi2v_diffcomp_evolution_{tag}.png"),
-                        dt=dt_arg)
+                        os.path.join(OUT_DIR, f"pc_etd1v_diffcomp_evolution_{tag}.png"),
+                        t_end=t_end_arg, dt=dt_arg)
     plot_final_snapshot(all_snaps, all_labels, dx,
-                        os.path.join(OUT_DIR, f"gr_epi2v_diffcomp_final_{tag}.png"),
-                        dt=dt_arg)
+                        os.path.join(OUT_DIR, f"pc_etd1v_diffcomp_final_{tag}.png"),
+                        t_end=t_end_arg, dt=dt_arg)
     plot_vertical_profile(all_snaps, all_labels, dx,
-                          os.path.join(OUT_DIR, f"gr_epi2v_diffcomp_vprofile_{tag}.png"),
-                          dt=dt_arg)
+                          os.path.join(OUT_DIR, f"pc_etd1v_diffcomp_vprofile_{tag}.png"),
+                          t_end=t_end_arg, dt=dt_arg)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ compare_schemes.py
 Standalone accuracy and efficiency comparison across all time schemes.
 
 This is the core of the dissertation's novel contribution:
-  "Systematic comparison of RK4, semi-implicit, EPI2, EPI3"
+  "Systematic comparison of RK4, semi-implicit, ETD1, EPI3"
 
 What this script does:
   1. Computes a reference solution using CTCS at very small dt
@@ -50,7 +50,7 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 # Constants
 # ===========================================================================
 
-ALL_SCHEMES = ['FTCS', 'BTCS', 'CTCS', 'RK4', 'SI', 'EPI2', 'EPI3']
+ALL_SCHEMES = ['FTCS', 'BTCS', 'CTCS', 'RK4', 'SI', 'ETD1', 'EPI3']
 
 SCHEME_COLORS = {
     'FTCS': '#e74c3c',
@@ -58,7 +58,7 @@ SCHEME_COLORS = {
     'CTCS': '#3498db',
     'RK4':  '#2ecc71',
     'SI':   '#9b59b6',
-    'EPI2': '#1abc9c',
+    'ETD1': '#1abc9c',
     'EPI3': '#f39c12',
 }
 

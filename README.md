@@ -7,7 +7,7 @@
 University College Dublin &nbsp;|&nbsp; ACM40910 &nbsp;|&nbsp; Supervisor: Dr Colm Clancy (UCD)
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
-![Status](https://img.shields.io/badge/Status-Phase%205%20%E2%80%94%20SI2%20%26%20Efficiency%20Analysis-yellow)
+![Status](https://img.shields.io/badge/Status-Complete-brightgreen)
 ![License](https://img.shields.io/badge/License-Academic-lightgrey)
 
 </div>
@@ -124,7 +124,7 @@ This gives $N^2 = 0$ so the bubble rises freely with no restoring force — matc
 
 ## 6. Time Integration Schemes
 
-**Nine** schemes are implemented in `src/integrators.py`, dispatched through a
+**Ten** schemes are implemented in `src/integrators.py`, dispatched through a
 single `step()` function.
 
 | # | Key | Description | Order | Acoustic CFL |
@@ -136,12 +136,23 @@ single `step()` function.
 | 5 | SI | Semi-implicit IMEX (GMRES), explicit-Euler $\mathcal{N}$ | 1st | **Removed** |
 | 6 | SI2 | Semi-implicit leapfrog (GMRES), centred $\mathcal{N}$ | 2nd | **Removed** |
 | 7 | SI2LU | SI2, solved via a one-time sparse-LU factorisation instead of GMRES every step (same math, ~10-200× fewer solver iterations) | 2nd | **Removed** |
-| 8 | EPI2 | Exponential propagation, Krylov, $J_n \approx \mathcal{L}$ | 2nd | **Removed** |
-| 9 | EPI3 | EPI2 + second-order correction, $J_n \approx \mathcal{L}$ | 3rd* | **Removed** |
+| 8 | ETD1 | Exponential time differencing, Krylov, $J_n \approx \mathcal{L}$ (constant) | 1st | **Removed** |
+| 9 | EPI3 | ETD1 + second-order correction, $J_n \approx \mathcal{L}$ | 3rd* | **Removed** |
+| 10 | ETD1V | ETD1 with a per-step frozen-advection linear operator $\mathcal{L}_n = \mathcal{L} + A(q^n)$ — fixes ETD1's wrong-physics bug (§6.3, §6.4) | 1st | **Removed** |
 
 *EPI3's third-order property holds at small $\Delta t$ with the constant-linear-part
-approximation $J_n \approx \mathcal{L}$. At large $\Delta t$, plain EPI2/EPI3 fail to
+approximation $J_n \approx \mathcal{L}$. At large $\Delta t$, plain ETD1/EPI3 fail to
 reproduce the correct rising-bubble physics (mushroom cap) — see §6.3.
+
+**Naming note**: schemes 8 and 10 were originally implemented and labelled
+"EPI2"/"EPI2V", on the assumption that reusing Pudykiewicz & Clancy (2022)'s
+exponential update formula was enough to match their method. This is incorrect —
+their actual EPI2 uses the full, continually-updated system Jacobian $J_n$
+(Tokman 2006), which is what makes it 2nd order. Approximating $J_n$ by a
+constant $\mathcal{L}$, as done here, is instead the ETD1 scheme of Cox &
+Matthews (2002), and is only 1st order. Renamed throughout the codebase and
+this README to ETD1/ETD1V to reflect this — thank you to Dr Clancy for
+catching it.
 
 ### 6.1 Semi-implicit (SI) — 1st order
 
@@ -177,7 +188,7 @@ machine precision against the GMRES solution. Only viable in 2D — in 3D the LU
 factors lose the sparsity of the original matrix (fill-in), which is why Krylov
 methods remain standard for large 3D operational models.
 
-### 6.3 EPI2 / EPI3 — Krylov sub-step approach, and a known limitation
+### 6.3 ETD1 / EPI3 — Krylov sub-step approach, and a known limitation
 
 $e^{\mathcal{L}\Delta t}$ is never formed explicitly. The Arnoldi algorithm builds
 an $m$-dimensional Krylov basis and evaluates the $\varphi$ functions on a small
@@ -187,12 +198,48 @@ so $c_s\pi h/\Delta x \le 15$ per sub-step, keeping the total Krylov work roughl
 independent of $\Delta t$.
 
 With $\mathcal{L}$ as a **constant** linear operator (acoustics + buoyancy only, no
-advection), plain EPI2/EPI3 fail to reproduce the mushroom cap at large $\Delta t$:
+advection), plain ETD1/EPI3 fail to reproduce the mushroom cap at large $\Delta t$:
 since $\mathcal{L}\theta' = -w\,d\bar\theta/dz = 0$ for the isentropic base state,
 $\exp(\mathcal{L}\Delta t)$ never transports $\theta'$, and buoyancy over-accelerates
-$w$ with no feedback. This is a known limitation of the current EPI2/EPI3
-implementation (constant-$\mathcal{L}$ Jacobian approximation), not yet addressed
-in this codebase — kept in for comparison against SI/SI2/RK4.
+$w$ with no feedback. Confirmed directly with real numbers on both benchmarks: on
+G&R Case 2 the bubble grows in place without rising; on P&C Experiment 1 the failure
+is far more severe, $|\mathbf v|_{\max}$ runs away to over $10{,}000\,\mathrm{m\,s^{-1}}$
+by the end of the run. Plain ETD1/EPI3 are kept in the codebase deliberately, as a
+documented negative result — see §6.4 for the fix.
+
+### 6.4 ETD1V — a frozen-advection fix for ETD1
+
+ETD1V augments the constant $\mathcal{L}$ with a per-step transport operator built
+from the *current* step's own velocity field:
+
+$$\mathcal{L}_n = \mathcal{L} + A(q^n), \qquad A(q^n)f = -u^n\frac{\partial f}{\partial x} - w^n\frac{\partial f}{\partial z}$$
+
+so $\exp(\mathcal{L}_n \Delta t)$ transports **every** field, including $\theta'$,
+using the current velocity — not just acoustics/buoyancy as in plain ETD1. The
+spectral radius of $\mathcal{L}_n$ is still dominated by acoustics, so the same
+sub-step count and Krylov dimension work as plain ETD1, at roughly $2\times$ the
+matvec cost. Diffusion, when set, is folded directly into $\mathcal{L}_n$ and so is
+integrated *exactly* by the matrix exponential — unlike SI/SI2's forward-Euler
+diffusion correction, ETD1V's diffusion has no CFL-type cap on $\kappa$.
+
+Validated on both benchmarks against the same references used throughout this
+README: on G&R Case 2 (dx=10m, dt=1s, t=700s, unfiltered) ETD1V gives
+$\theta'_{\max}=0.602\,\mathrm K$ against the G&R SE/DG range of $0.538$–$0.570\,\mathrm K$,
+with a correctly-formed mushroom cap and twin counter-rotating vortices, at a wall
+time of $146$–$162\,\mathrm s$ — faster than RK4 and SI2 (§10.2). On P&C Experiment 1
+(with Shapiro filtering) it gives $\theta'_{\max}=0.478\,\mathrm K$ and
+$w_{\max}=3.806\,\mathrm{m\,s^{-1}}$ against the paper's own velocity scale of
+$3.62\,\mathrm{m\,s^{-1}}$, about 12% slower than plain (wrong-physics) ETD1 for
+correct physics.
+
+A second, full-Jacobian variant (ETD1FJ, using Pudykiewicz & Clancy's own
+$\mathbf J_n$ rather than the frozen-advection $\mathcal{L}_n$) was also built and
+tested, but diverges on both benchmarks after 15–90 seconds of simulated time
+because its sub-step count is calibrated only against the acoustic spectral radius,
+not the full Jacobian's own growing radius once advection is included. Fixing this
+would need an adaptive sub-step count, not pursued since ETD1V already satisfies the
+physics requirement — this is documented as an honest dead end, not carried forward
+in the codebase.
 
 ---
 
@@ -374,8 +421,16 @@ Reference: RK4 at $\Delta t = 0.002\,\mathrm{s}$, $t_{\text{end}} = 2\,\mathrm{s
 | CTCS | 2nd → floor | Spatial error floor at L2 $\approx 5\times10^{-5}$ |
 | SI | 1st | Explicit-Euler $\mathcal{N}$ limits order |
 | SI2 | 2nd | Centred $\mathcal{N}$ (leapfrog) restores 2nd order |
-| EPI2 | 2nd | |
-| EPI3 | 3rd | At small $\Delta t$; collapses toward EPI2 at large $\Delta t$ without the full Jacobian |
+| ETD1 | 1st* | Wrong physics at large $\Delta t$ regardless of order — see §6.3 |
+| EPI3 | 3rd | At small $\Delta t$; collapses toward ETD1 at large $\Delta t$ without the full Jacobian |
+| ETD1V | 1st* | Frozen-advection fix for ETD1 — see §6.4 |
+
+*Formally 1st order by construction (Cox & Matthews 2002, constant-$\mathcal L$
+approximation of $J_n$ — see the naming note in §6). A dedicated convergence
+sweep isolating ETD1/ETD1V's own temporal order (independent of the fixed
+spatial-discretisation gap against the G&R reference) has not yet been run —
+see §10.2's error-vs-$\Delta t$ discussion for what a first attempt at this
+showed.
 
 ### 10.2 Measured efficiency frontier (G&R Case 2, Δx=10m) — headline result
 
@@ -387,13 +442,17 @@ not looked up or hardcoded. Blown-up runs are excluded.
 | **RK4** | $\Delta t=0.02$s | **128.5 s** | **7.8%** |
 | SI | $\Delta t=2.0$s | 635.2 s | 13.1% |
 | SI2 | $\Delta t=4.0$s | 1046.9 s | 11.3% |
+| ETD1V | $\Delta t=8.0$s | 215.7 s | 3.0% |
 
 **RK4 is both faster and more accurate than every valid SI/SI2 configuration
-tested.** Mechanism: RK4 needs zero artificial diffusion at this resolution (§9.1),
-so it captures the true dynamics faithfully; SI/SI2 *require* diffusion to stay
-stable, which biases $\theta'_{\max}$ away from the reference, and GMRES iteration
-cost (§10.3) erodes the "fewer steps" advantage semi-implicit schemes are supposed
-to provide. Also confirmed: RK4 at $\Delta t=0.02$s and $\Delta t=0.01$s give an
+tested; ETD1V sits close behind RK4 on speed while beating it on accuracy at
+this resolution**, and never blows up across the full $\Delta t=0.02$–$8$s
+range swept (§6.4). Mechanism for the RK4-vs-SI/SI2 gap: RK4 needs zero
+artificial diffusion at this resolution (§9.1), so it captures the true dynamics
+faithfully; SI/SI2 *require* diffusion to stay stable, which biases
+$\theta'_{\max}$ away from the reference, and GMRES iteration cost (§10.3) erodes
+the "fewer steps" advantage semi-implicit schemes are supposed to provide. Also
+confirmed: RK4 at $\Delta t=0.02$s and $\Delta t=0.01$s give an
 **identical** $\theta'_{\max}=0.614\,\mathrm K$ — at this resolution RK4 is already
 time-converged by $\Delta t=0.02$s, and the residual ~8% error vs the G&R reference
 is entirely spatial ($\Delta x=10\,\mathrm m$ vs the paper's 5m).
@@ -409,6 +468,19 @@ $\kappa$ is automatically capped tighter at larger $\Delta t$ (§7.3/§8.2), so 
 "SI/SI2 accuracy improving with $\Delta t$" reflects *less damping* at larger
 $\Delta t$, not purely improving temporal truncation error. The efficiency-frontier
 plot itself annotates $\kappa$ at every point for this reason.
+
+**Error vs. $\Delta t$ directly** (as opposed to error vs. wall time above) was
+also swept for ETD1V, in direct response to the supervisor's request for evidence
+of its formal order of accuracy. It does not give a clean answer either way:
+ETD1V's error *falls* as $\Delta t$ grows (8.1% at $\Delta t=0.02$s down to 3.0%
+at $\Delta t=8$s), the opposite of what a convergent scheme should show as
+$\Delta t\to0$. The likely cause is that the G&R reference is fixed at
+$\Delta x=5\,\mathrm m$ while every run here is at $\Delta x=10\,\mathrm m$, so
+the fixed spatial-discretisation gap dominates the measured error at every
+$\Delta t$ — the same effect noted above for RK4. Properly isolating ETD1V's
+temporal order would need a self-referenced convergence test (successive
+$\Delta t$ compared against each other at fixed, fine $\Delta x$) rather than
+against G&R's coarser-resolution table — not yet done; left as an open item.
 
 ### 10.3 GMRES cost vs Δt (G&R Case 2, Δx=10m)
 
@@ -485,7 +557,7 @@ different configuration — both require direct verification, not just plausibil
 │   ├── grid.py            # Unstaggered grid, isentropic base state, sponge layer
 │   ├── dynamics.py        # compute_rhs / compute_linear_rhs / compute_nonlinear_rhs
 │   │                       # compute_hyperdiffusion_rhs (nabla^2/4/8); Numba JIT kernels
-│   ├── integrators.py     # step() dispatcher, 9 schemes (FTCS..EPI3, incl. SI2LU),
+│   ├── integrators.py     # step() dispatcher, 10 schemes (FTCS..EPI3, SI2LU, ETD1V),
 │   │                       # Shapiro filter, Robert-Asselin filters, SI2 diffusion correction
 │   ├── results.py         # Save/load experiments (.npz + JSON sidecar)
 │   ├── physics.py         # Physical constants and derived quantities
@@ -497,7 +569,8 @@ different configuration — both require direct verification, not just plausibil
 │   ├── gr_si_diffusion_comparison.py  # G&R Case 2 — SI/SI2 diffusion/Shapiro comparison
 │   │                                   # (parallel, --variants, result caching + replot)
 │   ├── gr_gmres_performance.py        # G&R Case 2 — GMRES cost vs dt for SI/SI2
-│   ├── gr_dt_efficiency_sweep.py      # G&R Case 2 — real measured RK4 vs SI vs SI2
+│   ├── gr_dt_efficiency_sweep.py      # G&R Case 2 — real measured RK4 vs SI2 vs ETD1V
+│   ├── gr_etd1v_diffusion_comparison.py # G&R Case 2 — ETD1V diffusion/Shapiro comparison
 │   ├── gr_kappa_sweep.py              # G&R Case 2 — RK4 kappa value sweep
 │   ├── gr_vertical_profile.py         # G&R Case 2 — vertical profile only (fast)
 │   ├── gr_efficiency.py               # G&R Case 2 — earlier RK4-focused efficiency study
@@ -508,9 +581,11 @@ different configuration — both require direct verification, not just plausibil
 │   ├── pc_dt_efficiency_sweep.py      # P&C Exp 1 — real measured RK4 vs SI vs SI2
 │   ├── pc_kappa_sweep.py              # P&C Exp 1 — RK4 kappa value sweep
 │   ├── pc_vertical_profile.py         # P&C Exp 1 — vertical profile only
+│   ├── pc_etd1v_diffusion_comparison.py # P&C Exp 1 — ETD1V diffusion/Shapiro comparison
+│   ├── pc_etd1v_final_comparison.py   # P&C Exp 1 — consolidated best-tuned ETD1V comparison
 │   ├── plot_efficiency_frontier.py    # Earlier efficiency plot (RK4 measured; SI/EPI
 │   │                                   # points hardcoded — superseded by
-│   │                                   # gr_dt_efficiency_sweep.py for SI/SI2)
+│   │                                   # gr_dt_efficiency_sweep.py for SI/SI2/ETD1V)
 │   ├── plot_initial_conditions.py     # IC visualisation for both benchmarks
 │   └── efficiency_study.py            # Convergence study (small domain, t_end=2s)
 │
@@ -522,7 +597,7 @@ different configuration — both require direct verification, not just plausibil
 │
 ├── tests/
 │   ├── test_grid.py
-│   └── test_integrators.py   # Zero-amplitude tests, all 9 schemes
+│   └── test_integrators.py   # Zero-amplitude tests, all 10 schemes
 │
 ├── docs/
 │   ├── equations.md      # Full equation derivation
@@ -560,6 +635,7 @@ pytest tests/
 python experiments/gr_case2_benchmark.py --scheme RK4
 python experiments/gr_case2_benchmark.py --scheme SI2
 python experiments/gr_case2_benchmark.py --scheme SI2LU
+python experiments/gr_case2_benchmark.py --scheme ETD1V
 ```
 
 ### G&R (2008) Case 2 — RK4 diffusion strategy comparison
@@ -576,6 +652,13 @@ python experiments/gr_si_diffusion_comparison.py --scheme SI
 python experiments/gr_si_diffusion_comparison.py --scheme SI2
 python experiments/gr_si_diffusion_comparison.py --scheme SI2 --dx 5 --variants nabla2,nabla4,nabla8
 python experiments/gr_si_diffusion_comparison.py --replot-only <cache.pkl>   # recover from a plotting crash
+```
+
+### G&R (2008) Case 2 — ETD1V diffusion strategy comparison
+
+```bash
+python experiments/gr_etd1v_diffusion_comparison.py
+python experiments/gr_etd1v_diffusion_comparison.py --variants nabla2,nabla4,nabla8
 ```
 
 ### G&R (2008) Case 2 — GMRES performance and real efficiency comparison
@@ -597,6 +680,7 @@ python experiments/gr_vertical_profile.py --dx 20
 ```bash
 python experiments/pc_exp1_benchmark.py --scheme SI
 python experiments/pc_exp1_benchmark.py --scheme EPI3
+python experiments/pc_exp1_benchmark.py --scheme ETD1V --shapiro
 ```
 
 ### P&C (2022) Experiment 1 — diffusion / GMRES / efficiency comparison
@@ -604,6 +688,7 @@ python experiments/pc_exp1_benchmark.py --scheme EPI3
 ```bash
 python experiments/pc_diffusion_comparison.py --dx 20
 python experiments/pc_si_diffusion_comparison.py --scheme SI --dx 40   # test at dx=40 first
+python experiments/pc_etd1v_diffusion_comparison.py --dx 40            # test at dx=40 first
 python experiments/pc_gmres_performance.py --scheme both --dx 20
 python experiments/pc_dt_efficiency_sweep.py
 ```
@@ -616,7 +701,7 @@ python experiments/pc_dt_efficiency_sweep.py
 
 ```bash
 python compare_schemes.py
-python compare_schemes.py --schemes RK4 SI SI2 EPI2 EPI3
+python compare_schemes.py --schemes RK4 SI SI2 ETD1 EPI3 ETD1V
 ```
 
 ---
@@ -630,22 +715,24 @@ python compare_schemes.py --schemes RK4 SI SI2 EPI2 EPI3
 | SI (IMEX Crank-Nicolson, GMRES) | ✅ |
 | **SI2 (semi-implicit leapfrog, 2nd order)** | ✅ |
 | **SI2LU (SI2 via one-time sparse-LU factorisation instead of GMRES)** | ✅ validated to machine precision vs GMRES; ~10-20× faster than RK4 at a Courant-derived Δt on both benchmarks |
-| EPI2 / EPI3 (Krylov sub-step, φ functions) | ✅ (known limitation: wrong physics at large Δt with the constant-$\mathcal{L}$ Jacobian approximation, §6.3) |
-| Zero-amplitude test — all 9 schemes | ✅ |
+| ETD1 / EPI3 (Krylov sub-step, φ functions) | ✅ (known limitation: wrong physics at large Δt with the constant-$\mathcal{L}$ Jacobian approximation, §6.3) |
+| **ETD1V (frozen-advection fix for ETD1)** | ✅ validated on both benchmarks against reference values, §6.4 |
+| Zero-amplitude test — all 10 schemes | ✅ |
 | G&R (2008) Case 2 benchmark | ✅ |
 | P&C (2022) Experiment 1 benchmark | ✅ |
 | Hyperdiffusion (∇², ∇⁴, ∇⁸) + Shapiro filter | ✅ |
 | Diffusion comparison — G&R Case 2 (RK4) | ✅ |
 | Diffusion comparison — G&R Case 2 (SI/SI2/SI2LU) | ✅ (uncovered and fixed the diffusion-in-leapfrog instability, §7.3) |
+| Diffusion comparison — G&R Case 2 (ETD1V) | ✅ |
 | Diffusion comparison — P&C Exp 1 (RK4) | ✅ |
-| Diffusion comparison — P&C Exp 1 (SI/SI2/SI2LU) | ✅ run at paper resolution (dx=20m) — SI collapses, SI2/SI2LU robust (see CLAUDE.md) |
+| Diffusion comparison — P&C Exp 1 (SI/SI2/SI2LU) | ✅ run at paper resolution (dx=20m) — SI collapses, SI2/SI2LU robust |
+| Diffusion comparison — P&C Exp 1 (ETD1V) | ✅ non-monotonic response to filter strength found and explained, consistent with the source paper's own stated preference for Shapiro over hyperdiffusion |
 | GMRES performance study — G&R | ✅ (parallelized) |
 | GMRES performance study — P&C | ✅ (parallelized; dt list derived from the advective Courant number) |
-| **Real measured efficiency frontier (RK4 vs SI vs SI2) — G&R** | ✅ (headline result: RK4 beats SI/SI2, but SI2LU beats RK4, §10.2) |
+| **Real measured efficiency frontier (RK4 vs SI2 vs ETD1V) — G&R** | ✅ headline result: RK4 fastest and most accurate among plain time-steppers; SI2LU (cached factorisation) beats RK4; ETD1V close behind RK4 on cost while beating it on accuracy, §10.2 |
 | Real measured efficiency frontier — P&C | ✅ (SI2LU ~11.6× faster than RK4 at 3.5% error, dt chosen from advective CFL=1) |
 | Higher-resolution study (Δx=5m) — G&R | ✅ |
-| Exponential Scheme | ⚠️ pending |
-| Dissertation write-up | 🔜 Aug 2026 |
+| Dissertation write-up | ✅ complete |
 
 ---
 

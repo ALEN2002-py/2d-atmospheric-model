@@ -5,7 +5,7 @@ import numpy as np
 from grid import Grid
 from integrators import step
 
-ALL_SCHEMES = ['FTCS','BTCS','CTCS','RK4','SI','SI2','SI2LU','EPI2','EPI3','EPI2V']
+ALL_SCHEMES = ['FTCS','BTCS','CTCS','RK4','SI','SI2','SI2LU','ETD1','EPI3','ETD1V']
 
 def test_zero_amplitude_all_schemes():
     g = Grid()

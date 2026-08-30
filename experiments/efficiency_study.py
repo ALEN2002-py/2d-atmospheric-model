@@ -161,10 +161,10 @@ def run_efficiency_study(bubble_amp=2.0, t_end=2.0,
                          ref_dt=0.002):
     """Full efficiency and accuracy comparison."""
 
-    schemes  = ['FTCS', 'CTCS', 'RK4', 'SI', 'EPI2', 'EPI3']
+    schemes  = ['FTCS', 'CTCS', 'RK4', 'SI', 'ETD1', 'EPI3']
     test_dts = [0.005, 0.01, 0.02, 0.05, 0.1]
     colors   = {'FTCS':'red', 'CTCS':'blue', 'RK4':'green',
-                'SI':'purple', 'EPI2':'orange', 'EPI3':'brown'}
+                'SI':'purple', 'ETD1':'orange', 'EPI3':'brown'}
 
     # Reference solution
     print("\nComputing reference solution...")

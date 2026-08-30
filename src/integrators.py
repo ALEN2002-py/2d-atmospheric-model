@@ -11,17 +11,29 @@ SI     — Semi-implicit IMEX       (1st order, L implicit via GMRES)
 SI2LU  — SI2, (I-dt*L) solved via one-time sparse LU factorization
          instead of GMRES every step (same math, ~200x faster; see
          _semi_implicit_leapfrog_direct)
-EPI2   — Exponential Propagation  (2nd order, Krylov sub-steps, J=L)
+ETD1   — Exponential Time Differencing (Cox & Matthews 2002 eq 4;
+         1st order, Krylov sub-steps, constant J=L)
 EPI3   — Exponential Propagation  (3rd order, P&C 2022 formula,   J=L)
+
+Naming note: this scheme was originally implemented and labelled "EPI2"
+(after Pudykiewicz & Clancy 2022's eq 2.6), on the assumption that using
+their same exp/phi_1 update formula was enough to match their method. Dr
+Clancy (supervisor) pointed out this is incorrect: P&C's actual EPI2 uses
+the full, continually-updated system Jacobian J_n (Tokman 2006), which is
+what makes it 2nd order. Approximating J_n by a constant L, as this code
+does, is instead the ETD1 scheme of Cox & Matthews (2002), and is only
+1st order. Renamed throughout to ETD1/ETD1V to reflect this. EPI3 is left
+named as-is (no confirmed equivalent name in the ETD family).
 
 L + N splitting:
   dq/dt = L*q + N(q)
   L = linear stiff operator (acoustic waves, buoyancy)
   N = nonlinear advection (slow, treated explicitly)
 
-EPI formulas (Pudykiewicz & Clancy 2022, eqs 2.6-2.7)
+ETD1/EPI3 formulas (ETD1: Cox & Matthews 2002 eq 4; EPI3: Pudykiewicz &
+Clancy 2022 eq 2.7, applied here with J_n approximated by constant L)
 -------------------------------------------------------
-EPI2:  u^{n+1} = u^n + phi_1(Jn*dt)*dt*F^n                      (eq 2.6)
+ETD1:  u^{n+1} = u^n + phi_1(Jn*dt)*dt*F^n
 EPI3:  u^{n+1} = u^n + phi_1(Jn*dt)*dt*F^n
                       + (2/3)*phi_2(Jn*dt)*dt*R^{n-1}            (eq 2.7)
        where R^{n-1} = F^{n-1} - F^n - Jn*(u^{n-1} - u^n)
@@ -29,7 +41,7 @@ EPI3:  u^{n+1} = u^n + phi_1(Jn*dt)*dt*F^n
 With the approximation Jn = L (constant linear part):
   F^n = L*q^n + N^n
   phi_1(L*dt)*dt*F^n = (exp(L*dt)-I)*q^n + phi_1(L*dt)*dt*N^n
-  -> EPI2 == exp(L*dt)*q^n + phi_1(L*dt)*dt*N^n   (same as before)
+  -> ETD1 == exp(L*dt)*q^n + phi_1(L*dt)*dt*N^n   (same as before)
   R^{n-1} = N^{n-1} - N^n
 
 So EPI3 correction = (2/3)*phi_2(L*dt)*dt*(N^{n-1} - N^n)
@@ -37,16 +49,16 @@ This uses the PREVIOUS step's N, unlike the predictor-corrector.
 
 Shapiro filter (P&C eq 5.6-5.7)
 ---------------------------------
-Applied to all 4 fields every 2 EPI time steps.
+Applied to all 4 fields every 2 exponential-scheme time steps.
 F = Fx*Fz (separable box filter):
   Fx: 1/4 * f_{i-1} + 1/2 * f_i + 1/4 * f_{i+1}   (periodic in x)
   Fz: 1/4 * f_{j-1} + 1/2 * f_j + 1/4 * f_{j+1}   (zero-gradient at top/bottom)
 
-EPI sub-step approach for EPI2
+Sub-step approach for ETD1
 --------------------------------
 For large acoustic CFL, single Krylov m=30 can't span exp(L*dt).
 Sub-divide into p sub-steps of h=dt/p (auto-selected so c_s*pi/dx*h <= 15).
-EPI2 exact identity: exp(L*dt)*q + phi_1(L*dt)*dt*N
+ETD1 exact identity: exp(L*dt)*q + phi_1(L*dt)*dt*N
   = iterate p of: y_{i+1} = exp(L*h)*y_i + h*phi_1(L*h)*N
 
 EPI3 exact sub-step formula
@@ -63,7 +75,7 @@ step() return value
 --------------------
 step() returns (state_new, state_prev, epi_extra):
   - state_prev : input state (for CTCS bookkeeping)
-  - epi_extra  : dict {'n_rhs': n_rhs} for EPI2/EPI3; None otherwise
+  - epi_extra  : dict {'n_rhs': n_rhs} for ETD1/EPI3; None otherwise
 Callers that used the old 2-tuple can ignore the third element.
 """
 
@@ -86,10 +98,10 @@ def step(state, grid, dt, scheme='RK4', state_old=None, epi_n_prev=None, epsilon
 
     Returns a 3-tuple (state_new, state_prev, epi_extra).
     state_prev is just the input state passed back for CTCS bookkeeping.
-    epi_extra is {'n_rhs': ...} for EPI2/EPI3/EPI2V, None for everything else.
+    epi_extra is {'n_rhs': ...} for ETD1/EPI3/ETD1V, None for everything else.
 
     scheme options: 'FTCS', 'BTCS', 'CTCS', 'RK4', 'SI', 'SI2', 'SI2LU',
-                    'EPI2', 'EPI3', 'EPI2V'
+                    'ETD1', 'EPI3', 'ETD1V'
     state_old  needed for CTCS, SI2, and SI2LU; both bootstrap with SI if None.
     epi_n_prev needed for EPI3 to carry the previous-step nonlinear RHS.
     epsilon    off-centring parameter for SI2/SI2LU only (Dr. Clancy, 2026-08
@@ -132,14 +144,14 @@ def step(state, grid, dt, scheme='RK4', state_old=None, epi_n_prev=None, epsilon
             state_new, n_iters = _semi_implicit_leapfrog_direct(state, state_old, grid, dt, epsilon=epsilon)
             state_new = _apply_diffusion_correction(state_new, grid, dt)
         return state_new, state, {'gmres_iters': n_iters}
-    elif scheme == 'EPI2':
-        state_new, n_rhs = _epi2(state, grid, dt)
+    elif scheme == 'ETD1':
+        state_new, n_rhs = _etd1(state, grid, dt)
         return state_new, state, {'n_rhs': n_rhs}
     elif scheme == 'EPI3':
         state_new, n_rhs = _epi3(state, grid, dt, n_prev=epi_n_prev)
         return state_new, state, {'n_rhs': n_rhs}
-    elif scheme == 'EPI2V':
-        state_new, n_rhs = _epi2_varL(state, grid, dt)
+    elif scheme == 'ETD1V':
+        state_new, n_rhs = _etd1v(state, grid, dt)
         return state_new, state, {'n_rhs': n_rhs}
     else:
         raise ValueError(f"Unknown scheme '{scheme}'.")
@@ -666,14 +678,17 @@ def _krylov_epi(L_apply, q_vec, c_vecs, m_max=30):
 
 
 # ===========================================================================
-# Scheme 6 — EPI2  (sub-step Krylov, P&C 2022 eq 2.6)
+# Scheme 6 — ETD1  (Cox & Matthews 2002 eq 4, sub-step Krylov)
 # ===========================================================================
 
-def _epi2(state, grid, dt, p=None, m_sub=10):
+def _etd1(state, grid, dt, p=None, m_sub=10):
     """
-    EPI2 (P&C 2022 eq 2.6):
+    ETD1 (Cox & Matthews 2002, eq 4 — same update formula as P&C 2022 eq 2.6,
+    but with J approximated by the constant linear operator L rather than
+    P&C's own continually-updated Jacobian, which is what makes this ETD1
+    rather than their true EPI2 — see the module docstring's naming note):
       u^{n+1} = u^n + phi_1(L*dt)*dt*F^n
-             == exp(L*dt)*q^n + phi_1(L*dt)*dt*N^n   (with J=L approximation)
+             == exp(L*dt)*q^n + phi_1(L*dt)*dt*N^n
 
     Sub-stepped: p sub-steps of h=dt/p, auto-selected so c_s*pi/dx*h <= 15.
 
@@ -729,7 +744,7 @@ def _epi3(state, grid, dt, n_prev=None, p=None, m_sub=10):
     The Hessenberg matrix has spectral radius ~15 per sub-step (not 817 for full dt),
     so small_expm is well-conditioned.
 
-    Bootstrap: n_prev=None on the first step falls back to EPI2 (c2=0).
+    Bootstrap: n_prev=None on the first step falls back to ETD1 (c2=0).
 
     Returns (state_new, n_rhs_current).
     """
@@ -746,7 +761,7 @@ def _epi3(state, grid, dt, n_prev=None, p=None, m_sub=10):
         return h * _state_to_vec(compute_linear_rhs(_vec_to_state(v, grid), grid))
 
     if n_prev is None:
-        # Bootstrap with EPI2 (no R_prev available yet)
+        # Bootstrap with ETD1 (no R_prev available yet)
         c_h = h * n_vec
         y = q_vec.copy()
         for _ in range(p):
@@ -760,7 +775,7 @@ def _epi3(state, grid, dt, n_prev=None, p=None, m_sub=10):
 
     if n_prev_norm < 0.01 * n_curr_norm:
         # N^{n-1} ≈ 0 (startup: initial u=w=0 makes N^0=0, so R = -N^1 = O(1)).
-        # Correction would dominate — use EPI2 for this step instead.
+        # Correction would dominate — use ETD1 for this step instead.
         c_h = h * n_vec
         y = q_vec.copy()
         for _ in range(p):
@@ -782,24 +797,26 @@ def _epi3(state, grid, dt, n_prev=None, p=None, m_sub=10):
 
 
 # ===========================================================================
-# Scheme EPI2V — EPI2 with frozen-advection linear operator
+# Scheme ETD1V — ETD1 with frozen-advection linear operator
 # ===========================================================================
 # Restored 2026-08 (removed earlier this session as out-of-scope, then
-# brought back after plain EPI2 was freshly re-confirmed to have wrong
-# physics on both G&R and P&C -- see CLAUDE.md's EPI2 sections). EPI2V
-# never made it into a git commit in this repo's history, so it's
-# reconstructed here from the same source seen and removed earlier in this
-# session. Validated on G&R Case 2 (dx=10m, dt=1s, t=700s): theta'max=0.602K,
-# wmax=2.505 m/s, both within ~5-6% of the G&R reference and matching RK4 --
-# bubble correctly rises and forms the mushroom cap, unlike plain EPI2.
+# brought back after plain ETD1 (then still labelled EPI2) was freshly
+# re-confirmed to have wrong physics on both G&R and P&C -- see CLAUDE.md's
+# ETD1 sections). ETD1V never made it into a git commit in this repo's
+# history, so it's reconstructed here from the same source seen and removed
+# earlier in this session. Validated on G&R Case 2 (dx=10m, dt=1s, t=700s):
+# theta'max=0.602K, wmax=2.505 m/s, both within ~5-6% of the G&R reference
+# and matching RK4 -- bubble correctly rises and forms the mushroom cap,
+# unlike plain ETD1.
 #
-# A companion full-Jacobian variant (EPI2FJ, matrix-free J_n via finite
-# differencing) was also rebuilt and tested alongside this one, but its
-# sub-step count was only calibrated to the acoustic spectral radius (same
-# formula as L-only EPI2) and became under-resolved once the full Jacobian's
-# spectral radius grew with the advection term -- it diverged around t~90-98s
-# on the same test. Dropped again rather than fixed, since EPI2V alone
-# already satisfies the physics requirement without that instability.
+# A companion full-Jacobian variant (matrix-free J_n via finite
+# differencing, would be a true EPI2 in Tokman's sense rather than ETD1)
+# was also rebuilt and tested alongside this one, but its sub-step count
+# was only calibrated to the acoustic spectral radius (same formula as
+# L-only ETD1) and became under-resolved once the full Jacobian's spectral
+# radius grew with the advection term -- it diverged around t~90-98s on the
+# same test. Dropped again rather than fixed, since ETD1V alone already
+# satisfies the physics requirement without that instability.
 
 def _frozen_advect(state_v, u_n, w_n, grid):
     """
@@ -821,9 +838,9 @@ def _frozen_advect(state_v, u_n, w_n, grid):
     return Av
 
 
-def _epi2_varL(state, grid, dt, p=None, m_sub=10):
+def _etd1v(state, grid, dt, p=None, m_sub=10):
     """
-    EPI2 with frozen-advection linear operator L_n = L + A(q^n).
+    ETD1 with frozen-advection linear operator L_n = L + A(q^n).
 
     Why this fixes the physics
     --------------------------
@@ -844,7 +861,7 @@ def _epi2_varL(state, grid, dt, p=None, m_sub=10):
     ||L||_spec      ≈ c_s * π/dx                         ≈ 109 s⁻¹  (acoustics)
     L_n is still dominated by acoustics → same sub-step count p and m_sub=10 work.
 
-    Sub-step formula (derived from EPI2 variation-of-constants):
+    Sub-step formula (derived from ETD1 variation-of-constants):
       q^{n+1} = exp(L_n*dt)*q^n + φ₁(L_n*dt)*dt * N_res(q^n)
     where N_res = N(q^n) - A(q^n)*q^n  (purely nonlinear pressure/compression).
 
