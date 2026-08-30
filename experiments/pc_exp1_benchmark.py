@@ -75,6 +75,10 @@ from integrators import step, shapiro_filter, robert_asselin_filter_time
 OUT_DIR = "output/figures"
 os.makedirs(OUT_DIR, exist_ok=True)
 
+# Internal scheme keys ("EPI2V") are unchanged; this only renames the
+# thesis-facing plot titles to match the dissertation's ETD1/ETD1V terminology.
+DISPLAY_NAME = {"EPI2V": "ETD1V"}
+
 
 # ---------------------------------------------------------------------------
 # Paper parameters (Section 6.1)
@@ -149,7 +153,7 @@ def run(scheme="RK4", dx=40.0, dt=None, t_end=None, shapiro=True, kappa=0.0):
     if t_end is None:
         t_end = PAPER["t_end"]
 
-    is_epi      = scheme in ("EPI2", "EPI3")
+    is_epi      = scheme in ("EPI2", "EPI3", "EPI2V")
     is_si       = scheme in ("SI", "SI2")   # any semi-implicit variant
     is_si2      = scheme == "SI2"           # leapfrog variant (needs Robert-Asselin)
     is_explicit = scheme in ("RK4", "FTCS")
@@ -247,7 +251,7 @@ def run(scheme="RK4", dx=40.0, dt=None, t_end=None, shapiro=True, kappa=0.0):
         state = state_new
 
         if is_epi and epi_extra is not None:
-            epi_n_prev = epi_extra["n_rhs"]
+            epi_n_prev = epi_extra.get("n_rhs")
 
         # Shapiro filter: P&C (2022) eq 5.6-5.7, every shapiro_interval steps.
         # EPI: every 2 steps (P&C standard at dt=15s → 30s period).
@@ -362,7 +366,7 @@ def plot_snapshots(grid, snapshots, diag, scheme, dx, shapiro, t_end,
     fig.suptitle(
         "P&C (2022) Experiment 1 -- Convective Bubble\n"
         "{},  dx=dz={:.0f} m,  dt={} s,  {}{}".format(
-            scheme, dx, diag["dt"], filter_tag, smooth_tag),
+            DISPLAY_NAME.get(scheme, scheme), dx, diag["dt"], filter_tag, smooth_tag),
         fontsize=12,
     )
     plt.tight_layout()
@@ -388,7 +392,7 @@ def plot_velocity_time(grid, snapshots, diag, scheme, dx):
     ax.set_xlabel("Time  (min)")
     ax.set_ylabel("|v|max  (m/s)")
     ax.set_title("P&C (2022) Exp 1 -- Maximum wind speed vs time\n"
-                 "{}, dx={:.0f} m".format(scheme, dx))
+                 "{}, dx={:.0f} m".format(DISPLAY_NAME.get(scheme, scheme), dx))
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -426,7 +430,7 @@ if __name__ == "__main__":
         description="P&C (2022) Experiment 1: Convective Bubble benchmark"
     )
     parser.add_argument("--scheme", default="RK4",
-                        choices=["EPI3", "EPI2", "RK4", "SI", "SI2"],
+                        choices=["EPI3", "EPI2", "EPI2V", "RK4", "SI", "SI2"],
                         help="Time integration scheme")
     parser.add_argument("--dx",    type=float, default=40.0,
                         help="Grid spacing in m (default: 40; paper uses 20)")

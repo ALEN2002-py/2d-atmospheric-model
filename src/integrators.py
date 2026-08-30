@@ -73,25 +73,31 @@ from scipy.sparse import kron, diags, identity as sp_identity, bmat, csc_matrix
 from scipy.sparse.linalg import LinearOperator, gmres, splu
 from scipy.linalg import expm as small_expm
 from dynamics import (compute_rhs, compute_linear_rhs,
-                      compute_nonlinear_rhs, _dx, _dz)
+                      compute_nonlinear_rhs, compute_hyperdiffusion_rhs, _dx, _dz)
 
 
 # ===========================================================================
 # Main dispatcher
 # ===========================================================================
 
-def step(state, grid, dt, scheme='RK4', state_old=None, epi_n_prev=None):
+def step(state, grid, dt, scheme='RK4', state_old=None, epi_n_prev=None, epsilon=0.0):
     """
     Advance the model state by one time step.
 
     Returns a 3-tuple (state_new, state_prev, epi_extra).
     state_prev is just the input state passed back for CTCS bookkeeping.
-    epi_extra is {'n_rhs': ...} for EPI2/EPI3, None for everything else.
+    epi_extra is {'n_rhs': ...} for EPI2/EPI3/EPI2V, None for everything else.
 
     scheme options: 'FTCS', 'BTCS', 'CTCS', 'RK4', 'SI', 'SI2', 'SI2LU',
-                    'EPI2', 'EPI3'
+                    'EPI2', 'EPI3', 'EPI2V'
     state_old  needed for CTCS, SI2, and SI2LU; both bootstrap with SI if None.
     epi_n_prev needed for EPI3 to carry the previous-step nonlinear RHS.
+    epsilon    off-centring parameter for SI2/SI2LU only (Dr. Clancy, 2026-08
+               email). 0.0 (default) is the original centred scheme, byte-for-
+               byte unchanged. Small positive values (e.g. 0.05, 0.1) trade
+               some accuracy for extra stability by shifting weight toward the
+               implicit q^{n+1} term -- see _semi_implicit_leapfrog's
+               docstring for the exact formula. Ignored by every other scheme.
     """
     if scheme == 'FTCS':
         return _ftcs(state, grid, dt), state, None
@@ -112,18 +118,18 @@ def step(state, grid, dt, scheme='RK4', state_old=None, epi_n_prev=None):
             print("  SI2: bootstrapping step 0 with SI")
             state_new, n_iters = _semi_implicit(state, grid, dt)
         else:
-            state_new, n_iters = _semi_implicit_leapfrog(state, state_old, grid, dt)
+            state_new, n_iters = _semi_implicit_leapfrog(state, state_old, grid, dt, epsilon=epsilon)
             state_new = _apply_diffusion_correction(state_new, grid, dt)
         return state_new, state, {'gmres_iters': n_iters}
     elif scheme == 'SI2LU':
-        # Same physics/formula as SI2 -- (I-dt*L) solved via a sparse-LU
+        # Same physics/formula as SI2 -- (I-dt*(1+2*eps)*L) solved via a sparse-LU
         # factorization built once and reused, instead of GMRES every step.
         # See _semi_implicit_leapfrog_direct's docstring for validation.
         if state_old is None:
             print("  SI2LU: bootstrapping step 0 with SI")
             state_new, n_iters = _semi_implicit(state, grid, dt)
         else:
-            state_new, n_iters = _semi_implicit_leapfrog_direct(state, state_old, grid, dt)
+            state_new, n_iters = _semi_implicit_leapfrog_direct(state, state_old, grid, dt, epsilon=epsilon)
             state_new = _apply_diffusion_correction(state_new, grid, dt)
         return state_new, state, {'gmres_iters': n_iters}
     elif scheme == 'EPI2':
@@ -131,6 +137,9 @@ def step(state, grid, dt, scheme='RK4', state_old=None, epi_n_prev=None):
         return state_new, state, {'n_rhs': n_rhs}
     elif scheme == 'EPI3':
         state_new, n_rhs = _epi3(state, grid, dt, n_prev=epi_n_prev)
+        return state_new, state, {'n_rhs': n_rhs}
+    elif scheme == 'EPI2V':
+        state_new, n_rhs = _epi2_varL(state, grid, dt)
         return state_new, state, {'n_rhs': n_rhs}
     else:
         raise ValueError(f"Unknown scheme '{scheme}'.")
@@ -315,23 +324,32 @@ def _semi_implicit(state, grid, dt):
 # Scheme SI2 — Semi-implicit leapfrog (2nd order)
 # ===========================================================================
 
-def _semi_implicit_leapfrog(state, state_old, grid, dt):
+def _semi_implicit_leapfrog(state, state_old, grid, dt, epsilon=0.0):
     """
-    Leapfrog (centred) for N, Crank-Nicolson (trapezoidal) for L.
+    Leapfrog (centred) for N, off-centred Crank-Nicolson for L.
 
-    Starting from the centred time derivative:
-      (q^{n+1} - q^{n-1}) / (2*dt) = (1/2)(L*q^{n+1} + L*q^{n-1}) + N(q^n)
+    Starting from the off-centred time derivative (Dr. Clancy, 2026-08 email;
+    epsilon=0 recovers plain trapezoidal/Crank-Nicolson, matching the original
+    derivation exactly):
+      (q^{n+1} - q^{n-1}) / (2*dt) = (1/2+eps)*L*q^{n+1} + (1/2-eps)*L*q^{n-1} + N(q^n)
 
     Multiply by 2*dt and rearrange:
-      (I - dt*L)*q^{n+1} = (I + dt*L)*q^{n-1} + 2*dt*N(q^n)
+      (I - dt*(1+2*eps)*L)*q^{n+1} = (I + dt*(1-2*eps)*L)*q^{n-1} + 2*dt*N(q^n)
+
+    epsilon > 0 shifts weight toward the (unconditionally stable) implicit
+    q^{n+1} term and away from the q^{n-1} term -- classic off-centring trick
+    to trade some accuracy for extra damping/robustness. epsilon=0 is exactly
+    the original centred scheme; nothing changes for any existing caller that
+    doesn't pass epsilon.
 
     Differences vs SI:
       - Uses q^{n-1} (state_old) not q^n on the RHS
-      - Coefficient is dt (not dt/2) for L terms
+      - Coefficient is dt*(1+/-2*eps) (not dt/2) for L terms
       - Coefficient is 2*dt (not dt) for N term
       - N(q^n) is centred (2nd order) not forward (1st order)
 
-    This makes both L and N 2nd order -> overall 2nd order scheme.
+    This makes both L and N 2nd order -> overall 2nd order scheme (at eps=0;
+    off-centring trades some of that order for stability).
     The 3-level structure introduces a spurious computational mode;
     suppress it with robert_asselin_filter_time() after each step.
 
@@ -349,9 +367,12 @@ def _semi_implicit_leapfrog(state, state_old, grid, dt):
     # as a separate single-level forward-Euler correction — see
     # _apply_diffusion_correction().
 
-    # RHS: (I + dt*L)*q^{n-1} + 2*dt*N(q^n)
+    coeff_impl = 1.0 + 2.0 * epsilon   # weight on L*q^{n+1} (implicit side)
+    coeff_expl = 1.0 - 2.0 * epsilon   # weight on L*q^{n-1} (RHS side)
+
+    # RHS: (I + dt*(1-2*eps)*L)*q^{n-1} + 2*dt*N(q^n)
     rhs_state = {
-        k: state_old[k] + dt * l_old[k] + 2.0 * dt * n_rhs[k]
+        k: state_old[k] + coeff_expl * dt * l_old[k] + 2.0 * dt * n_rhs[k]
         for k in state
     }
 
@@ -362,7 +383,7 @@ def _semi_implicit_leapfrog(state, state_old, grid, dt):
         return _state_to_vec(compute_linear_rhs(_vec_to_state(v, grid), grid))
 
     def matvec(v):
-        return v - dt * L_apply(v)          # (I - dt*L) — note dt not dt/2
+        return v - coeff_impl * dt * L_apply(v)   # (I - dt*(1+2*eps)*L)
 
     A    = LinearOperator((n, n), matvec=matvec, dtype=float)
     q0   = _state_to_vec(state)             # initial guess: q^n
@@ -477,11 +498,13 @@ def _get_lu_factorization(grid, dt, coeff):
     return _lu_cache[key]
 
 
-def _semi_implicit_leapfrog_direct(state, state_old, grid, dt):
+def _semi_implicit_leapfrog_direct(state, state_old, grid, dt, epsilon=0.0):
     """
-    SI2 (identical math to _semi_implicit_leapfrog) but solved via a
-    sparse-LU factorization of (I - dt*L) that is built ONCE per (grid, dt)
-    and reused every step, instead of running GMRES fresh each time.
+    SI2 (identical math to _semi_implicit_leapfrog, including the epsilon
+    off-centring -- see that function's docstring) but solved via a
+    sparse-LU factorization of (I - dt*(1+2*eps)*L) that is built ONCE per
+    (grid, dt, epsilon) and reused every step, instead of running GMRES
+    fresh each time.
 
     RHS and physics are byte-for-byte the same derivation as
     _semi_implicit_leapfrog -- only the linear solve method differs.
@@ -489,13 +512,16 @@ def _semi_implicit_leapfrog_direct(state, state_old, grid, dt):
     n_rhs = compute_nonlinear_rhs(state, grid)
     l_old = compute_linear_rhs(state_old, grid)
 
+    coeff_impl = 1.0 + 2.0 * epsilon
+    coeff_expl = 1.0 - 2.0 * epsilon
+
     rhs_state = {
-        k: state_old[k] + dt * l_old[k] + 2.0 * dt * n_rhs[k]
+        k: state_old[k] + coeff_expl * dt * l_old[k] + 2.0 * dt * n_rhs[k]
         for k in state
     }
     q_rhs = _state_to_vec(rhs_state)
 
-    lu = _get_lu_factorization(grid, dt, coeff=1.0)
+    lu = _get_lu_factorization(grid, dt, coeff=coeff_impl)
     q_new = lu.solve(q_rhs)
 
     return _vec_to_state(q_new, grid), 0   # 0 "iterations" -- direct solve
@@ -754,6 +780,125 @@ def _epi3(state, grid, dt, n_prev=None, p=None, m_sub=10):
 
     return _vec_to_state(y, grid), n_rhs
 
+
+# ===========================================================================
+# Scheme EPI2V — EPI2 with frozen-advection linear operator
+# ===========================================================================
+# Restored 2026-08 (removed earlier this session as out-of-scope, then
+# brought back after plain EPI2 was freshly re-confirmed to have wrong
+# physics on both G&R and P&C -- see CLAUDE.md's EPI2 sections). EPI2V
+# never made it into a git commit in this repo's history, so it's
+# reconstructed here from the same source seen and removed earlier in this
+# session. Validated on G&R Case 2 (dx=10m, dt=1s, t=700s): theta'max=0.602K,
+# wmax=2.505 m/s, both within ~5-6% of the G&R reference and matching RK4 --
+# bubble correctly rises and forms the mushroom cap, unlike plain EPI2.
+#
+# A companion full-Jacobian variant (EPI2FJ, matrix-free J_n via finite
+# differencing) was also rebuilt and tested alongside this one, but its
+# sub-step count was only calibrated to the acoustic spectral radius (same
+# formula as L-only EPI2) and became under-resolved once the full Jacobian's
+# spectral radius grew with the advection term -- it diverged around t~90-98s
+# on the same test. Dropped again rather than fixed, since EPI2V alone
+# already satisfies the physics requirement without that instability.
+
+def _frozen_advect(state_v, u_n, w_n, grid):
+    """
+    Apply the frozen-velocity advection operator A(u_n, w_n) to state_v.
+
+    A(u_n, w_n) * f = -u_n * ∂f/∂x - w_n * ∂f/∂z   for each field f.
+
+    BCs (matching compute_linear_rhs conventions):
+      w[0,:] = w[-1,:] = 0   (no-flux top/bottom)
+      theta[0,:] = theta[-1,:] = 0  (no-flux for theta perturbation)
+    """
+    dx, dz = grid.dx, grid.dz
+    Av = {k: -u_n * _dx(state_v[k], dx) - w_n * _dz(state_v[k], dz)
+          for k in state_v}
+    Av['w'][0, :]     = 0.0
+    Av['w'][-1, :]    = 0.0
+    Av['theta'][0, :] = 0.0
+    Av['theta'][-1,:] = 0.0
+    return Av
+
+
+def _epi2_varL(state, grid, dt, p=None, m_sub=10):
+    """
+    EPI2 with frozen-advection linear operator L_n = L + A(q^n).
+
+    Why this fixes the physics
+    --------------------------
+    With J = L (constant acoustic/buoyancy operator):
+      L * θ' = -w * dθ̄/dz = 0  (isentropic: dθ̄/dz = 0)
+    So exp(L*dt) does NOT transport θ'. The warm perturbation stays fixed,
+    buoyancy drives w upward but θ' never moves → bubble does not rise.
+
+    Fix: augment L with the frozen-velocity transport A(q^n):
+      L_n * f = L * f + A(q^n) * f = L * f - u^n * ∂f/∂x - w^n * ∂f/∂z
+
+    Now exp(L_n * dt) transports ALL fields with frozen velocity u^n, w^n.
+    After each step velocities are updated, so θ' correctly follows the flow.
+
+    Spectral radius of L_n
+    ----------------------
+    ||A(q^n)||_spec ≈ |u_max| * π/dx + |w_max| * π/dz  ≈ 0.8 s⁻¹  (peak flow)
+    ||L||_spec      ≈ c_s * π/dx                         ≈ 109 s⁻¹  (acoustics)
+    L_n is still dominated by acoustics → same sub-step count p and m_sub=10 work.
+
+    Sub-step formula (derived from EPI2 variation-of-constants):
+      q^{n+1} = exp(L_n*dt)*q^n + φ₁(L_n*dt)*dt * N_res(q^n)
+    where N_res = N(q^n) - A(q^n)*q^n  (purely nonlinear pressure/compression).
+
+    N_res^θ = 0 exactly (linear advection of θ' is entirely in A*q^n).
+    N_res^u ≈ -cp*θ'*∂π'/∂x  (nonlinear acoustic coupling — 2nd order in pert.)
+    N_res^π ≈ -(R/cv)*π'*(∂u/∂x + ∂w/∂z)  (nonlinear compression)
+
+    Diffusion (grid.diffusion_coeff/diffusion_order), if set, is folded into
+    L_n as well: hyperdiffusion is linear in the state, so exp(L_n*dt)
+    integrates it EXACTLY, same as the acoustic/buoyancy/advection terms.
+    Unlike SI2's diffusion (see _apply_diffusion_correction), this needs no
+    separate split-step correction and no forward-Euler CFL cap on kappa --
+    the matrix exponential is unconditionally stable regardless of kappa.
+
+    Returns (state_new, n_rhs_full).
+    """
+    u_n = state['u']
+    w_n = state['w']
+
+    # N_residual = N(q^n) - A(q^n)*q^n  (purely nonlinear pressure terms)
+    n_full = compute_nonlinear_rhs(state, grid)
+    a_q    = _frozen_advect(state, u_n, w_n, grid)
+    n_res  = {k: n_full[k] - a_q[k] for k in n_full}
+
+    q_vec  = _state_to_vec(state)
+    nr_vec = _state_to_vec(n_res)
+
+    if p is None:
+        cs = math.sqrt(grid.cp / grid.cv * grid.Rd * grid.T0)
+        p  = max(1, math.ceil(cs * math.pi / grid.dx * dt / 15.0))
+
+    h   = dt / p
+    c_h = h * nr_vec    # very small: only nonlinear pressure correction
+
+    kappa = getattr(grid, 'diffusion_coeff', 0.0)
+    order = getattr(grid, 'diffusion_order', 2)
+
+    def L_n_h(v):
+        """L_n * v scaled by h, where L_n = L + A(q^n) [+ diffusion]."""
+        sv  = _vec_to_state(v, grid)
+        Lv  = compute_linear_rhs(sv, grid)
+        Av  = _frozen_advect(sv, u_n, w_n, grid)
+        Lsum = {k: Lv[k] + Av[k] for k in Lv}
+        if kappa > 0.0:
+            Dv = compute_hyperdiffusion_rhs(sv, grid, order=order, coeff=kappa)
+            for k in Lsum:
+                Lsum[k] += Dv[k]
+        return h * _state_to_vec(Lsum)
+
+    y = q_vec.copy()
+    for _ in range(p):
+        y = _krylov_epi(L_n_h, y, [c_h], m_max=m_sub)
+
+    return _vec_to_state(y, grid), n_full
 
 
 # ===========================================================================
