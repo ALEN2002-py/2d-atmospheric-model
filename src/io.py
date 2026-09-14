@@ -24,7 +24,9 @@ experiment data) is handled by results.py.
 """
 
 import os
+
 import matplotlib
+
 matplotlib.use("Agg")   # non-interactive backend; must be set before pyplot import
 
 

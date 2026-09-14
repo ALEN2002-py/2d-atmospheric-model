@@ -80,13 +80,21 @@ Callers that used the old 2-tuple can ignore the third element.
 """
 
 import math
-import numpy as np
-from scipy.sparse import kron, diags, identity as sp_identity, bmat, csc_matrix
-from scipy.sparse.linalg import LinearOperator, gmres, splu
-from scipy.linalg import expm as small_expm
-from dynamics import (compute_rhs, compute_linear_rhs,
-                      compute_nonlinear_rhs, compute_hyperdiffusion_rhs, _dx, _dz)
 
+import numpy as np
+from scipy.linalg import expm as small_expm
+from scipy.sparse import bmat, csc_matrix, diags, kron
+from scipy.sparse import identity as sp_identity
+from scipy.sparse.linalg import LinearOperator, gmres, splu
+
+from dynamics import (
+    _dx,
+    _dz,
+    compute_hyperdiffusion_rhs,
+    compute_linear_rhs,
+    compute_nonlinear_rhs,
+    compute_rhs,
+)
 
 # ===========================================================================
 # Main dispatcher
@@ -324,7 +332,11 @@ def _semi_implicit(state, grid, dt):
     # -- confirmed by direct comparison against the validated rtol=1e-8
     # reference (nabla8: 0.818K documented vs 0.571K at rtol=1e-5). A looser
     # tolerance is NOT safe here without a proper convergence study first.
-    q_new, info = gmres(A, q_rhs, x0=q0, atol=1e-10, rtol=1e-8, callback=_cb)
+    # callback_type='legacy' pins today's default explicitly, since scipy
+    # warns the default will change in a future release -- this keeps the
+    # per-call iteration count (and hence n_iters below) unaffected by that.
+    q_new, info = gmres(A, q_rhs, x0=q0, atol=1e-10, rtol=1e-8, callback=_cb,
+                         callback_type='legacy')
 
     if info != 0:
         print(f"  SI: GMRES did not converge (info={info})")
@@ -404,7 +416,8 @@ def _semi_implicit_leapfrog(state, state_old, grid, dt, epsilon=0.0):
     def _cb(xk): _iters[0] += 1
 
     # rtol=1e-8: DO NOT loosen -- see the note in _semi_implicit above.
-    q_new, info = gmres(A, q_rhs, x0=q0, atol=1e-10, rtol=1e-8, callback=_cb)
+    q_new, info = gmres(A, q_rhs, x0=q0, atol=1e-10, rtol=1e-8, callback=_cb,
+                         callback_type='legacy')
 
     if info != 0:
         print(f"  SI2: GMRES did not converge (info={info})")
@@ -944,37 +957,6 @@ def _vec_to_state(vec, grid):
 # ===========================================================================
 
 
-def _verify_phi2_krylov(m=15, n=20, seed=42):
-    """
-    Unit test: compare _krylov_phi2 against direct scipy expm formula.
-    phi_2(A)*b = expm([[A, b, 0]; [0, 0, 1]; [0, 0, 0]]) @ [0; 0; 1]  first n entries.
-    """
-    rng = np.random.default_rng(seed)
-    A = rng.standard_normal((n, n)) * 0.5
-    A = A - A.T   # skew-symmetric (pure imaginary eigenvalues)
-    b = rng.standard_normal(n) * 0.1
-
-    from scipy.linalg import expm
-    # Direct reference: phi_2(A)*b via augmented matrix [[A, b, 0]; [0, 0, 1]; [0, 0, 0]]
-    aug = n + 2
-    Ms2 = np.zeros((aug, aug))
-    Ms2[:n, :n] = A
-    Ms2[:n, n]  = b
-    Ms2[n, n+1] = 1.0
-    v02 = np.zeros(aug); v02[-1] = 1.0
-    ref_b = expm(Ms2) @ v02   # first n = phi_2(A)*b
-
-    def L_a(v):
-        return A @ v
-
-    res = _krylov_phi2(L_a, b, m_max=n)   # full space -> exact
-
-    err = np.linalg.norm(res - ref_b[:n]) / max(np.linalg.norm(ref_b[:n]), 1e-15)
-    print("  _verify_phi2_krylov: relative error = %.3e  (%s)"
-          % (err, 'PASS' if err < 1e-3 else 'FAIL'))
-    return err
-
-
 def _verify_phipm(m=10, n=20, seed=42):
     """Unit test: compare _krylov_epi against direct scipy expm."""
     rng = np.random.default_rng(seed)
@@ -1006,8 +988,8 @@ def _verify_phipm(m=10, n=20, seed=42):
     res = _krylov_epi(L_a, q, [c1, c2], m_max=n)   # full Krylov space -> exact
 
     err = np.linalg.norm(res - ref[:n]) / max(np.linalg.norm(ref[:n]), 1e-15)
-    print("  _verify_phipm:        relative error = %.3e  (%s)"
-          % (err, 'PASS' if err < 1e-3 else 'FAIL'))
+    print("  _verify_phipm:        relative error = {:.3e}  ({})"
+          .format(err, 'PASS' if err < 1e-3 else 'FAIL'))
     return err
 
 

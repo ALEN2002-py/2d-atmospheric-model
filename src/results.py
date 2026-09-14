@@ -27,10 +27,11 @@ Usage
     list_experiments()
 """
 
-import numpy as np
 import json
 import os
 from datetime import datetime
+
+import numpy as np
 
 # All results saved here
 RESULTS_DIR = "output/results"
@@ -73,7 +74,7 @@ def save_experiment(name, state, grid, metadata=None, snapshots=None):
     # --- Build metadata ---
     meta = {
         "name":      name,
-        "saved_at":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "saved_at":  datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
         "grid": {
             "Lx": grid.Lx, "Lz": grid.Lz,
             "dx": grid.dx, "dz": grid.dz,
@@ -161,5 +162,5 @@ def list_experiments():
         dt      = meta.get("dt", "?")
         n_steps = meta.get("n_steps", "?")
         saved   = meta.get("saved_at", "?")
-        print(f"  {name:<35} {scheme:<8} {str(dt):>6} {str(n_steps):>7}  {saved}")
+        print(f"  {name:<35} {scheme:<8} {dt!s:>6} {n_steps!s:>7}  {saved}")
     print()

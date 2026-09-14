@@ -1,0 +1,18 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# experiments/ scripts are one-off analysis drivers, deliberately excluded
+# to keep the CI lint gate meaningful (src/ + tests/) rather than noisy.
+extend-exclude = ["experiments", "docs", "output", ".venv_ci_check"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "RUF"]
+ignore = [
+    "E501",  # line length handled loosely; long inline physics comments are fine
+    "RUF001", "RUF002", "RUF003",  # codebase intentionally uses unicode math
+    # symbols (theta, nabla, kappa, x-times, superscripts) throughout comments
+    # and docstrings -- see CLAUDE.md's governing-equations notation.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]

@@ -1,7 +1,10 @@
 """Zero-amplitude tests for all time integration schemes."""
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import numpy as np
+
 from grid import Grid
 from integrators import step
 

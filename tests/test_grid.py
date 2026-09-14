@@ -1,8 +1,12 @@
 """Basic tests for grid.py"""
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import numpy as np
+
 from grid import Grid
+
 
 def test_grid_shapes():
     g = Grid()

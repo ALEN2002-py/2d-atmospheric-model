@@ -27,7 +27,6 @@ Boundary conditions:
 
 import numpy as np
 
-
 # ---------------------------------------------------------------------------
 # Default parameters
 # ---------------------------------------------------------------------------
@@ -90,7 +89,7 @@ class Grid:
         g = Grid({"stratification": "isothermal"})        # stable base state
     """
 
-    def __init__(self, params: dict = None):
+    def __init__(self, params: dict | None = None):
 
         cfg = {**DEFAULTS, **(params or {})}
 
@@ -102,8 +101,8 @@ class Grid:
         self.dx = cfg["dx"]
         self.dz = cfg["dz"]
 
-        self.nx = int(round(self.Lx / self.dx))
-        self.nz = int(round(self.Lz / self.dz))
+        self.nx = round(self.Lx / self.dx)
+        self.nz = round(self.Lz / self.dz)
 
         assert np.isclose(self.nx * self.dx, self.Lx), "Lx not divisible by dx"
         assert np.isclose(self.nz * self.dz, self.Lz), "Lz not divisible by dz"

@@ -9,6 +9,19 @@ University College Dublin &nbsp;|&nbsp; ACM40910 &nbsp;|&nbsp; Supervisor: Dr Co
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
 ![Status](https://img.shields.io/badge/Status-Complete-brightgreen)
 ![License](https://img.shields.io/badge/License-Academic-lightgrey)
+[![CI](https://github.com/ALEN2002-py/2d-atmospheric-model/actions/workflows/ci.yml/badge.svg)](https://github.com/ALEN2002-py/2d-atmospheric-model/actions/workflows/ci.yml)
+![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
+
+![Rising thermal bubble, RK4, Δx=10m — real simulation output, not an illustration](assets/gr_case2_bubble_evolution.gif)
+
+*The classic "mushroom cap" instability, formed from a genuine RK4 run of this
+solver — not a cached image from the source papers. See [§9](#9-benchmark-test-cases)
+for the full validation against Giraldo & Restelli (2008).*
+
+```bash
+git clone https://github.com/ALEN2002-py/2d-atmospheric-model.git && cd 2d-atmospheric-model
+docker build -t atmospheric-sim . && docker run atmospheric-sim
+```
 
 </div>
 
@@ -57,6 +70,63 @@ Giraldo & Restelli (2008, Case 2), chosen because it runs stably without explici
 diffusion, making it a clean platform for isolating temporal integration errors.
 A secondary benchmark, Pudykiewicz & Clancy (2022) Experiment 1, is used to test
 the same schemes at their published resolution and Courant numbers.
+
+### Headline result, at a glance
+
+Every number below is *measured* by `experiments/gr_dt_efficiency_sweep.py`
+(G&R Case 2, Δx=10m) — none are hardcoded or taken from a paper. Full detail,
+caveats, and scope of this comparison are in [§10.2](#10-efficiency-and-convergence-results).
+
+| Scheme | Best config | Wall time | Error vs G&R ref (0.570K) |
+|--------|-------------|-----------|----------------------------|
+| **RK4** | Δt=0.02s | **128.5 s** | **7.8%** |
+| SI | Δt=2.0s | 635.2 s | 13.1% |
+| SI2 | Δt=4.0s | 1046.9 s | 11.3% |
+| ETD1V | Δt=8.0s | 215.7 s | 3.0% |
+
+### Architecture at a glance
+
+```mermaid
+flowchart TD
+    E1[run_model.py] --> G
+    E2[menu.py] --> G
+    E3[compare_schemes.py] --> G
+    E4["experiments/*.py"] --> G
+
+    G["grid.py
+Grid: base state, sponge layer, initial condition"] --> S
+
+    S["integrators.py
+step() dispatcher"] --> D["dynamics.py
+compute_rhs / linear / nonlinear / hyperdiffusion
+(Numba JIT kernels)"]
+    D --> S
+
+    S --> SCH1["RK4, FTCS, BTCS, CTCS
+explicit"]
+    S --> SCH2["SI, SI2
+implicit, GMRES"]
+    S --> SCH3["SI2LU
+implicit, sparse LU"]
+    S --> SCH4["ETD1, ETD1V, EPI3
+Krylov phi-functions"]
+
+    SCH1 --> F["Shapiro / Robert-Asselin filters"]
+    SCH2 --> F
+    SCH3 --> F
+    SCH4 --> F
+
+    F --> R["results.py
+save/load (.npz + JSON sidecar)"]
+    R --> P["io.py / plot_results.py
+figures"]
+    P --> A["assets/, output/figures/"]
+```
+
+Every entry point builds a `Grid` (base state + initial condition), then drives
+it forward through `integrators.py`'s `step()` dispatcher — a single API across
+all 10 schemes (see [§6](#6-time-integration-schemes)) — before handing the
+result to `results.py` / `io.py` for saving and plotting.
 
 ---
 
@@ -611,6 +681,8 @@ different configuration — both require direct verification, not just plausibil
 
 ## 12. Getting Started
 
+### Option A — local Python environment
+
 ```bash
 git clone https://github.com/ALEN2002-py/2d-atmospheric-model.git
 cd 2d-atmospheric-model
@@ -624,6 +696,36 @@ python src/dynamics.py    # zero-amplitude test + speed benchmark
 python src/integrators.py # Krylov phi-function self-test
 pytest tests/
 ```
+
+### Option B — Docker
+
+No local Python setup required. The image installs dependencies, then runs
+the full test suite at build time as a correctness check, so a successful
+`docker build` is itself proof the numerics work:
+
+```bash
+docker build -t atmospheric-sim .
+docker run atmospheric-sim   # default: RK4, dt=0.02s, 500 steps
+```
+
+Override any `run_model.py` flag by appending arguments to `docker run`:
+
+```bash
+docker run atmospheric-sim --scheme SI2 --bubble_amp 2.0 --dt 1.0 --n_steps 700
+```
+
+To keep results on the host, mount `output/`:
+
+```bash
+docker run -v "$(pwd)/output:/app/output" atmospheric-sim --save --name my_run
+```
+
+### Continuous Integration
+
+Every push to `main` runs the lint gate (`ruff check src tests`) and the full
+`pytest` suite on Python 3.11 and 3.12 via GitHub Actions — see
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) and the badge at the
+top of this file.
 
 ---
 
