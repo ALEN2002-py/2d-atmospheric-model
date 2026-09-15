@@ -1,0 +1,12 @@
+.git/
+.venv/
+.venv_*/
+__pycache__/
+*.pyc
+output/
+ml/data/
+ml/surrogate.pt
+ml/*.png
+dashboard/node_modules/
+dashboard/dist/
+docs/thesis/

@@ -6,10 +6,25 @@ services:
       dockerfile: Dockerfile
     profiles: ["cli"]
 
-  # REST API: http://localhost:8000 (Swagger UI at /docs) — see README §API.
+  # REST API: http://localhost:8000 (Swagger UI at /docs) — see README §14.
   api:
     build:
       context: .
       dockerfile: Dockerfile.api
     ports:
       - "8000:8000"
+
+  # Web dashboard: http://localhost:5173 — see README §14's Web Dashboard subsection.
+  # VITE_API_BASE_URL is baked into the static bundle at build time and is
+  # fetched by the BROWSER, not by nginx -- so it must be the host-published
+  # API port (localhost:8000), not the internal compose service name `api`.
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - api

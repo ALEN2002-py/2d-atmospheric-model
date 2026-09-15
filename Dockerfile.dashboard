@@ -1,0 +1,15 @@
+# Multi-stage: build the static React/TS bundle with Node, serve it with nginx.
+# The API base URL is baked in at BUILD time (Vite inlines import.meta.env.*
+# into the bundle) -- override with --build-arg if the API isn't on localhost:8000.
+FROM node:20-slim AS build
+WORKDIR /app
+COPY dashboard/package*.json ./
+RUN npm install
+COPY dashboard/ ./
+ARG VITE_API_BASE_URL=http://localhost:8000
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 80

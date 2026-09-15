@@ -11,6 +11,8 @@ University College Dublin &nbsp;|&nbsp; ACM40910 &nbsp;|&nbsp; Supervisor: Dr Co
 ![License](https://img.shields.io/badge/License-Academic-lightgrey)
 [![CI](https://github.com/ALEN2002-py/2d-atmospheric-model/actions/workflows/ci.yml/badge.svg)](https://github.com/ALEN2002-py/2d-atmospheric-model/actions/workflows/ci.yml)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
+![React](https://img.shields.io/badge/React-TypeScript-61DAFB?logo=react&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-CPU-EE4C2C?logo=pytorch&logoColor=white)
 
 ![Rising thermal bubble, RK4, Δx=10m — real simulation output, not an illustration](assets/gr_case2_bubble_evolution.gif)
 
@@ -96,6 +98,9 @@ flowchart TD
     E4["experiments/*.py"] --> G
     E5["api/app.py
 REST API"] --> G
+
+    DASH["dashboard/
+React + TypeScript"] -.HTTP.-> E5
 
     G["grid.py
 Grid: base state, sponge layer, initial condition"] --> S
@@ -686,6 +691,14 @@ different configuration — both require direct verification, not just plausibil
 │   ├── train.py            # Trains and saves ml/surrogate.pt (gitignored, regenerable)
 │   └── evaluate.py         # Real measured accuracy/speedup vs the RK4 solver
 │
+├── dashboard/            # Web dashboard (§14) — React + TypeScript + Vite
+│   ├── src/
+│   │   ├── App.tsx          # Layout: form + run list + viewer
+│   │   ├── api.ts           # Typed fetch wrappers for the REST API
+│   │   ├── types.ts         # Mirrors api/schemas.py by hand
+│   │   └── components/      # RunForm, RunList, RunViewer, StatusBadge
+│   └── package.json
+│
 ├── tests/
 │   ├── test_grid.py
 │   ├── test_integrators.py   # Zero-amplitude tests, all 10 schemes
@@ -696,11 +709,12 @@ different configuration — both require direct verification, not just plausibil
 │   ├── equations.md      # Full equation derivation
 │   └── references.md     # Literature notes
 │
-├── .github/workflows/ci.yml   # Lint (ruff) + pytest on push/PR, Python 3.11 & 3.12,
-│                               # plus a separate ML smoke-test job (CPU torch)
+├── .github/workflows/ci.yml   # 4 jobs: Python lint+test (3.11 & 3.12), ML
+│                               # smoke-test (CPU torch), dashboard (eslint+tsc+build)
 ├── Dockerfile                 # CLI image (runs tests at build time)
 ├── Dockerfile.api             # REST API image (runs tests at build time)
-├── docker-compose.yml         # `docker compose up api`
+├── Dockerfile.dashboard       # Dashboard image (Node build -> nginx)
+├── docker-compose.yml         # `docker compose up api dashboard`
 ├── requirements.txt
 ├── requirements-api.txt
 ├── requirements-ml.txt
@@ -903,6 +917,46 @@ process; a production deployment would move this to a task queue
 (Celery/RQ) backed by a shared store (Redis/Postgres) instead. See the
 docstring in `api/store.py` for the full list.
 
+### Web Dashboard
+
+A single-page React + TypeScript app (`dashboard/`, Vite) on top of the
+API above: pick a scheme and parameters, submit, and watch the run
+progress live — a polled progress bar, the θ' field re-rendered from the
+`/snapshot` endpoint every ~700ms while it runs, and the final diagnostics
+table once it's done. A sidebar lists recent runs (shared with anyone
+else hitting the same API — it's reading the same backend state, not a
+client-side cache) and lets you jump back to any of them.
+
+**Deliberately not WebSocket-based.** Polling a REST endpoint every
+~700ms is far simpler to build, test, and reason about than a
+bidirectional streaming connection, and for runs that complete in single-
+digit seconds to low tens of seconds (this API's whole guardrail-bounded
+scope, [above](#14-rest-api)) the latency difference is not
+perceptible. WebSocket streaming would be the right call for a
+longer-running or higher-frequency use case; it wasn't the right call
+for this one.
+
+```bash
+cd dashboard
+npm install
+npm run dev          # http://localhost:5173, talks to the API on :8000
+```
+
+Or via Docker (brings up both together):
+
+```bash
+docker compose up api dashboard   # API on :8000, dashboard on :5173
+```
+
+The API base URL is baked into the static bundle at build time
+(`VITE_API_BASE_URL`, default `http://localhost:8000`) since this is a
+plain static site with no backend of its own — override it with
+`--build-arg VITE_API_BASE_URL=...` if the API isn't running locally.
+
+CI (`dashboard` job in `.github/workflows/ci.yml`) runs ESLint and a full
+`tsc` type-check + production build on every push/PR, separately from the
+Python jobs.
+
 ---
 
 ## 15. ML Surrogate
@@ -1029,8 +1083,9 @@ approach to results that don't come out entirely clean.
 | Higher-resolution study (Δx=5m) — G&R | ✅ |
 | Dissertation write-up | ✅ complete |
 | CI (GitHub Actions: lint + test on push/PR) | ✅ |
-| Docker (CLI + REST API images, `docker-compose.yml`) | ✅ |
+| Docker (CLI + REST API + dashboard images, `docker-compose.yml`) | ✅ |
 | **REST API (FastAPI, §14)** | ✅ submit/poll/snapshot endpoints over all 10 schemes, reuses the validated benchmark time-loop |
+| **Web Dashboard (React + TypeScript, §14)** | ✅ live progress/snapshot polling, run history, all 10 schemes, verified through the full Docker Compose stack |
 | **ML Surrogate (residual CNN, §15)** | ✅ ~20-25× measured speedup; θ' rollout accurate to ~1%, velocity-field rollout error documented as an open limitation |
 
 ---

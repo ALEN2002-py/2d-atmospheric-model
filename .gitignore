@@ -4,6 +4,11 @@ output/
 *.npy
 *.npz
 *.json
+# ...but *.json is too broad for dashboard/, which has real config files
+# that happen to be JSON (not generated output) -- un-ignore those specifically.
+!dashboard/package.json
+!dashboard/package-lock.json
+!dashboard/tsconfig*.json
 
 # ML surrogate — regenerable via ml/dataset.py, ml/train.py, ml/evaluate.py
 # (dataset is ~135MB, not something to commit; the one figure worth keeping
