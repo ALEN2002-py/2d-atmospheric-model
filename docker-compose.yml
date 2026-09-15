@@ -1,0 +1,15 @@
+services:
+  # CLI: python run_model.py [args...] — see README §12.
+  cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["cli"]
+
+  # REST API: http://localhost:8000 (Swagger UI at /docs) — see README §API.
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"

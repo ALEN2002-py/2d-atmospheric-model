@@ -42,8 +42,9 @@ docker build -t atmospheric-sim . && docker run atmospheric-sim
 11. [Repository Structure](#11-repository-structure)
 12. [Getting Started](#12-getting-started)
 13. [Running the Experiments](#13-running-the-experiments)
-14. [Development Status](#14-development-status)
-15. [References](#15-references)
+14. [REST API](#14-rest-api)
+15. [Development Status](#15-development-status)
+16. [References](#16-references)
 
 ---
 
@@ -92,6 +93,8 @@ flowchart TD
     E2[menu.py] --> G
     E3[compare_schemes.py] --> G
     E4["experiments/*.py"] --> G
+    E5["api/app.py
+REST API"] --> G
 
     G["grid.py
 Grid: base state, sponge layer, initial condition"] --> S
@@ -126,7 +129,8 @@ figures"]
 Every entry point builds a `Grid` (base state + initial condition), then drives
 it forward through `integrators.py`'s `step()` dispatcher — a single API across
 all 10 schemes (see [§6](#6-time-integration-schemes)) — before handing the
-result to `results.py` / `io.py` for saving and plotting.
+result to `results.py` / `io.py` for saving and plotting (the CLI/experiment
+scripts), or straight back as JSON/PNG (the REST API, [§14](#14-rest-api)).
 
 ---
 
@@ -665,15 +669,27 @@ different configuration — both require direct verification, not just plausibil
 ├── run_all.py            # Full test suite runner
 ├── plot_results.py       # Plotting utilities
 │
+├── api/                  # REST API (§14) — reuses the validated benchmark time-loop
+│   ├── app.py             # FastAPI routes (/runs, /runs/{id}, /runs/{id}/snapshot, /health)
+│   ├── runner.py          # Time-integration loop + PNG rendering
+│   ├── store.py           # In-memory run registry + bounded ThreadPoolExecutor
+│   └── schemas.py         # Request/response models + guardrail bounds
+│
 ├── tests/
 │   ├── test_grid.py
-│   └── test_integrators.py   # Zero-amplitude tests, all 10 schemes
+│   ├── test_integrators.py   # Zero-amplitude tests, all 10 schemes
+│   └── test_api.py           # REST API tests (FastAPI TestClient)
 │
 ├── docs/
 │   ├── equations.md      # Full equation derivation
 │   └── references.md     # Literature notes
 │
+├── .github/workflows/ci.yml   # Lint (ruff) + pytest on push/PR, Python 3.11 & 3.12
+├── Dockerfile                 # CLI image (runs tests at build time)
+├── Dockerfile.api             # REST API image (runs tests at build time)
+├── docker-compose.yml         # `docker compose up api`
 ├── requirements.txt
+├── requirements-api.txt
 └── README.md
 ```
 
@@ -808,7 +824,74 @@ python compare_schemes.py --schemes RK4 SI SI2 ETD1 EPI3 ETD1V
 
 ---
 
-## 14. Development Status
+## 14. REST API
+
+A FastAPI wrapper (`api/`) exposes the solver over HTTP so a run can be
+submitted and its result/visualisation fetched without touching Python —
+built for a browser dashboard (planned) to sit on top of, and as a
+standalone demonstration of the solver behind a production-shaped service
+boundary. The time-integration loop it runs is the same one validated in
+`experiments/gr_case2_benchmark.py` (identical auto-dt formula, SI2
+Robert-Asselin bookkeeping, and Shapiro-filter interval logic) — not a
+reimplementation, so results are directly comparable to the documented
+benchmark numbers, just at whatever (bounded) resolution/duration the
+request asks for.
+
+### Run it
+
+```bash
+pip install -r requirements.txt -r requirements-api.txt
+uvicorn api.app:app --reload --port 8000
+# Interactive docs: http://localhost:8000/docs
+```
+
+Or via Docker:
+
+```bash
+docker compose up api          # http://localhost:8000
+```
+
+### Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Liveness check |
+| POST | `/runs` | Submit a bubble-rise simulation; returns immediately with a `run_id` |
+| GET | `/runs` | List recent runs, most recent first |
+| GET | `/runs/{run_id}` | Status, progress, and (once done) the final diagnostics |
+| GET | `/runs/{run_id}/snapshot` | Latest θ' field as a PNG, renderable mid-run |
+
+```bash
+curl -s -X POST localhost:8000/runs -H "Content-Type: application/json" \
+  -d '{"scheme": "SI2", "dx": 20, "t_end": 60, "bubble_amp": 0.5}'
+# {"run_id": "a1b2c3d4e5f6", "status": "queued", ...}
+
+curl -s localhost:8000/runs/a1b2c3d4e5f6 | python -m json.tool
+curl -s localhost:8000/runs/a1b2c3d4e5f6/snapshot -o snapshot.png
+```
+
+### Guardrails, and why they exist
+
+This runs on a shared, in-process worker pool, so every request field is
+bounded (see `api/schemas.py`): grid spacing (5-100m), `t_end` (≤120s), and
+a hard cap of 20,000 timesteps regardless of the `dt`/`t_end` combination
+requested — a technically-legal-per-field but pathological request (e.g.
+a tiny `dt` paired with the maximum `t_end`) is rejected at execution time
+with a clear error instead of tying up a worker indefinitely. These bounds
+are specific to this demo API; the full, unbounded benchmark suite is
+still available by running the `experiments/` scripts directly, exactly
+as documented in [§13](#13-running-the-experiments).
+
+**Known scope limits** (documented, not fixed here, because fixing them
+means a different architecture, not a bug fix): run state lives in an
+in-process dict, so it is lost on restart and doesn't scale past one API
+process; a production deployment would move this to a task queue
+(Celery/RQ) backed by a shared store (Redis/Postgres) instead. See the
+docstring in `api/store.py` for the full list.
+
+---
+
+## 15. Development Status
 
 | Milestone | Status |
 |---|:---:|
@@ -835,10 +918,13 @@ python compare_schemes.py --schemes RK4 SI SI2 ETD1 EPI3 ETD1V
 | Real measured efficiency frontier — P&C | ✅ (SI2LU ~11.6× faster than RK4 at 3.5% error, dt chosen from advective CFL=1) |
 | Higher-resolution study (Δx=5m) — G&R | ✅ |
 | Dissertation write-up | ✅ complete |
+| CI (GitHub Actions: lint + test on push/PR) | ✅ |
+| Docker (CLI + REST API images, `docker-compose.yml`) | ✅ |
+| **REST API (FastAPI, §14)** | ✅ submit/poll/snapshot endpoints over all 10 schemes, reuses the validated benchmark time-loop |
 
 ---
 
-## 15. References
+## 16. References
 
 1. **Giraldo, F.X. & Restelli, M. (2008).** A study of spectral element and discontinuous Galerkin methods for the Euler and Navier–Stokes equations in nonhydrostatic mesoscale atmospheric modeling. *J. Comput. Phys.*, **227**, 3849–3877.
 2. **Pudykiewicz, J.A. & Clancy, C. (2022).** Convection experiments with the exponential time integration scheme. *J. Comput. Phys.*, **449**, 110803.

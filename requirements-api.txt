@@ -1,0 +1,5 @@
+# API layer on top of requirements.txt -- install both for the REST API:
+#   pip install -r requirements.txt -r requirements-api.txt
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27   # test client for tests/test_api.py
