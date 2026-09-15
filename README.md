@@ -43,8 +43,9 @@ docker build -t atmospheric-sim . && docker run atmospheric-sim
 12. [Getting Started](#12-getting-started)
 13. [Running the Experiments](#13-running-the-experiments)
 14. [REST API](#14-rest-api)
-15. [Development Status](#15-development-status)
-16. [References](#16-references)
+15. [ML Surrogate](#15-ml-surrogate)
+16. [Development Status](#16-development-status)
+17. [References](#17-references)
 
 ---
 
@@ -124,6 +125,10 @@ save/load (.npz + JSON sidecar)"]
     R --> P["io.py / plot_results.py
 figures"]
     P --> A["assets/, output/figures/"]
+
+    R -.trajectories.-> ML["ml/
+residual CNN surrogate
+learns the K-step operator"]
 ```
 
 Every entry point builds a `Grid` (base state + initial condition), then drives
@@ -675,21 +680,30 @@ different configuration — both require direct verification, not just plausibil
 │   ├── store.py           # In-memory run registry + bounded ThreadPoolExecutor
 │   └── schemas.py         # Request/response models + guardrail bounds
 │
+├── ml/                   # ML surrogate (§15) — residual CNN, K-step operator learning
+│   ├── dataset.py          # Builds (state_t, state_t+K) pairs from the real RK4 solver
+│   ├── model.py            # SurrogateCNN + per-channel Normalizer
+│   ├── train.py            # Trains and saves ml/surrogate.pt (gitignored, regenerable)
+│   └── evaluate.py         # Real measured accuracy/speedup vs the RK4 solver
+│
 ├── tests/
 │   ├── test_grid.py
 │   ├── test_integrators.py   # Zero-amplitude tests, all 10 schemes
-│   └── test_api.py           # REST API tests (FastAPI TestClient)
+│   ├── test_api.py           # REST API tests (FastAPI TestClient)
+│   └── test_ml_surrogate.py  # ML surrogate smoke tests (synthetic data, fast)
 │
 ├── docs/
 │   ├── equations.md      # Full equation derivation
 │   └── references.md     # Literature notes
 │
-├── .github/workflows/ci.yml   # Lint (ruff) + pytest on push/PR, Python 3.11 & 3.12
+├── .github/workflows/ci.yml   # Lint (ruff) + pytest on push/PR, Python 3.11 & 3.12,
+│                               # plus a separate ML smoke-test job (CPU torch)
 ├── Dockerfile                 # CLI image (runs tests at build time)
 ├── Dockerfile.api             # REST API image (runs tests at build time)
 ├── docker-compose.yml         # `docker compose up api`
 ├── requirements.txt
 ├── requirements-api.txt
+├── requirements-ml.txt
 └── README.md
 ```
 
@@ -891,7 +905,103 @@ docstring in `api/store.py` for the full list.
 
 ---
 
-## 15. Development Status
+## 15. ML Surrogate
+
+A small residual CNN (`ml/`, PyTorch, CPU-only) trained to approximate the
+RK4 solver's own K-step operator: given a state, predict the state
+K=50 steps (1.0s of simulated time) later in a single forward pass,
+instead of 50 explicit RK4 steps. Trained and evaluated entirely on this
+project's own solver output — every number below is measured, on this
+machine, by `ml/evaluate.py`, not estimated or taken from a paper.
+
+### Setup
+
+- **Domain/IC**: same G&R (2008) Case 2 cosine-bell bubble as the rest of
+  this project, at Δx=20m (50×50 grid), Δt=0.02s (the same auto-dt formula
+  used throughout).
+- **Dataset** (`ml/dataset.py`): 6 full 40s RK4 trajectories at
+  bubble_amp ∈ {0.3, 0.4, 0.5, 0.6, 0.7, 0.8}K, subsampled into 588
+  (state_t, state_{t+K}) training pairs. **2 trajectories at bubble_amp ∈
+  {0.35, 0.65}K are held out entirely** (never seen during training) for
+  evaluation — an interpolation-generalisation test, not a train-set replay.
+- **Model** (`ml/model.py`): 4 stacked 3×3 conv layers (32 hidden
+  channels, ~30k parameters), predicting the *residual* `state_{t+K} -
+  state_t` rather than the absolute next state — standard practice for
+  PDE surrogates, and appropriate here since the fields change by a small
+  fraction of their own scale over one 1.0s jump in this regime.
+- **Training**: 60 epochs, Adam, MSE on the normalised residual — 222s on
+  CPU for the whole run (`ml/train.py`).
+
+### Results (measured, `ml/evaluate.py`)
+
+**Speed**: replaying 40 K-step jumps (2000 real RK4 steps, 40s simulated)
+took 2.55s for the real solver vs 0.13s for the surrogate — **a measured
+~20× speedup** (this number varies run to run with background CPU load;
+observed 20–25× across runs).
+
+**Accuracy is field-dependent, and this is the actual finding worth
+reporting** — a single combined error number across all 4 stacked
+channels (u, w, θ', π') is misleading, since they differ by orders of
+magnitude in scale and a joint L2 norm is dominated by whichever channel
+happens to carry the most raw signal. Reporting per field instead:
+
+| Field | Single-step relative L2 (mean) | Rollout relative L2 (mean, 40 chained jumps) | Rollout relative L2 (final, t=40s) |
+|---|---|---|---|
+| θ' | 0.01–0.04% | 0.3–0.4% | **1.2–1.3%** |
+| u | 5.0–5.3% | 36–45% | 48–63% |
+| w | 5.0–5.1% | 45–68% | 68–108% |
+| π' | 75–88% | 295–429% | 1013–1413% |
+
+(Ranges cover both held-out amplitudes, 0.35K and 0.65K.)
+
+**θ' — the physically dominant, directly interpretable field — rolls out
+accurately to ~1% error after 40 chained autoregressive jumps.** The
+comparison figure below shows why: the surrogate's θ' field is visually
+close to indistinguishable from the true RK4 solution at t=40s.
+
+**The velocity fields (u, w) degrade substantially under chained
+rollout** (45–108% relative error by t=40s) despite a good single-step
+accuracy (~5%) — a textbook case of **compounding autoregressive error**,
+a well-documented failure mode for neural PDE surrogates that are trained
+only on single-step supervision. Not fixed here; the standard mitigations
+(scheduled sampling / training on the model's own chained rollout rather
+than only ground-truth-to-ground-truth pairs, or a divergence-penalising
+physics-informed loss term for u/w) are noted as future work rather than
+implemented, given the scope of this addition.
+
+**π' is not a meaningful percentage to report at all**: its true values
+are ~1e-6, i.e. already at the edge of float32 noise for this problem —
+so its "relative error" figure reflects chasing numerical noise, not a
+real physical failure. Included in the table only for completeness, with
+this caveat attached, rather than either hiding it or quoting it
+uncritically as if it meant something.
+
+![Surrogate vs RK4 ground truth, both held-out test amplitudes](assets/ml_surrogate_comparison.png)
+
+### Reproduce
+
+```bash
+pip install -r requirements.txt -r requirements-ml.txt
+python ml/dataset.py     # ~30s: regenerates the 6 train + 2 test RK4 trajectories
+python ml/train.py       # ~4 min on CPU: trains and saves ml/surrogate.pt
+python ml/evaluate.py    # prints the table above and saves the comparison figure
+```
+
+### Scope
+
+This is a parametric surrogate for one bubble-amplitude sweep at one
+fixed resolution and one fixed K-step jump size — not a general-purpose
+neural PDE solver, and not benchmarked against a Fourier Neural Operator
+or physics-informed loss variant (both reasonable next steps, not
+attempted here). The honest headline is: **strong for the field that
+matters most for this benchmark (θ'), with a known, explained, and
+unaddressed weakness in the velocity fields under long autoregressive
+rollout** — reported as found, consistent with the rest of this project's
+approach to results that don't come out entirely clean.
+
+---
+
+## 16. Development Status
 
 | Milestone | Status |
 |---|:---:|
@@ -921,10 +1031,11 @@ docstring in `api/store.py` for the full list.
 | CI (GitHub Actions: lint + test on push/PR) | ✅ |
 | Docker (CLI + REST API images, `docker-compose.yml`) | ✅ |
 | **REST API (FastAPI, §14)** | ✅ submit/poll/snapshot endpoints over all 10 schemes, reuses the validated benchmark time-loop |
+| **ML Surrogate (residual CNN, §15)** | ✅ ~20-25× measured speedup; θ' rollout accurate to ~1%, velocity-field rollout error documented as an open limitation |
 
 ---
 
-## 16. References
+## 17. References
 
 1. **Giraldo, F.X. & Restelli, M. (2008).** A study of spectral element and discontinuous Galerkin methods for the Euler and Navier–Stokes equations in nonhydrostatic mesoscale atmospheric modeling. *J. Comput. Phys.*, **227**, 3849–3877.
 2. **Pudykiewicz, J.A. & Clancy, C. (2022).** Convection experiments with the exponential time integration scheme. *J. Comput. Phys.*, **449**, 110803.

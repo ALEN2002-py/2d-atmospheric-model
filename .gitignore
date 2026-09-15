@@ -5,6 +5,14 @@ output/
 *.npz
 *.json
 
+# ML surrogate — regenerable via ml/dataset.py, ml/train.py, ml/evaluate.py
+# (dataset is ~135MB, not something to commit; the one figure worth keeping
+# is copied to assets/ml_surrogate_comparison.png, committed there instead)
+ml/data/
+ml/surrogate.pt
+ml/surrogate_comparison.png
+.venv/
+
 # Private project notes
 CLAUDE.md
 

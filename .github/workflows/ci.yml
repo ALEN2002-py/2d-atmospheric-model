@@ -29,7 +29,31 @@ jobs:
           pip install ruff
 
       - name: Lint (ruff)
-        run: ruff check src tests api
+        run: ruff check src tests api ml
 
       - name: Run test suite
-        run: pytest tests/ -v
+        run: pytest tests/ -v --ignore=tests/test_ml_surrogate.py
+
+  ml-smoke-test:
+    # Separate job: torch is a heavy dependency, and ml/'s own tests are
+    # fast synthetic-data smoke tests, not the real (multi-minute) dataset
+    # generation / training run -- see tests/test_ml_surrogate.py's
+    # docstring and README's ML Surrogate section for the real numbers.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies (CPU-only torch)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-ml.txt --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Run ML surrogate smoke tests
+        run: pytest tests/test_ml_surrogate.py -v

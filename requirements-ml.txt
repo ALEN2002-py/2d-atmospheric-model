@@ -1,0 +1,6 @@
+# ML surrogate (ml/) on top of requirements.txt:
+#   pip install -r requirements.txt -r requirements-ml.txt
+# CPU-only torch is sufficient -- the model and dataset in ml/ are small
+# by design (see ml/model.py's docstring). For the CPU wheel specifically:
+#   pip install -r requirements.txt -r requirements-ml.txt --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
